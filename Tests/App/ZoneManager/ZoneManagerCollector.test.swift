@@ -465,6 +465,86 @@ class ZoneManagerCollectorTests: XCTestCase {
         XCTAssertNil(event.associatedZone)
     }
 
+    func testLocationUpdateStartsShortBeaconScan() throws {
+        let server = Server.fake()
+        let zone = AppZone(
+            entityId: "beacon_region",
+            serverIdentifier: server.identifier.rawValue,
+            inRegion: false
+        )
+        try database.write { db in
+            try zone.save(db)
+        }
+        let region = CLBeaconRegion(uuid: UUID(), identifier: zone.identifier)
+        locationManager.overrideMonitoredRegions = [region]
+
+        collector.locationManager(
+            locationManager,
+            didUpdateLocations: [CLLocation(latitude: 1.23, longitude: 4.56)]
+        )
+
+        XCTAssertEqual(locationManager.startedRangingConstraints, [region.beaconIdentityConstraint])
+    }
+
+    func testOpportunisticScanCollectsEntryAndStopsRanging() throws {
+        let server = Server.fake()
+        let zone = AppZone(
+            entityId: "beacon_region",
+            serverIdentifier: server.identifier.rawValue,
+            inRegion: false
+        )
+        try database.write { db in
+            try zone.save(db)
+        }
+        let region = CLBeaconRegion(uuid: UUID(), identifier: zone.identifier)
+        let beacon = CLBeacon(
+            uuid: region.uuid,
+            major: 0,
+            minor: 0,
+            proximity: .near,
+            accuracy: 1,
+            rssi: -60,
+            timestamp: Date()
+        )
+
+        collector.startOpportunisticBeaconScanning(in: [region], manager: locationManager)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: region.beaconIdentityConstraint
+        )
+
+        XCTAssertEqual(delegate.events, [
+            .init(eventType: .region(region, .inside), associatedZone: zone),
+        ])
+        XCTAssertEqual(locationManager.stoppedRangingConstraints, [region.beaconIdentityConstraint])
+    }
+
+    func testOpportunisticScanTimesOut() throws {
+        let server = Server.fake()
+        let zone = AppZone(
+            entityId: "beacon_region",
+            serverIdentifier: server.identifier.rawValue,
+            inRegion: false
+        )
+        try database.write { db in
+            try zone.save(db)
+        }
+        let region = CLBeaconRegion(uuid: UUID(), identifier: zone.identifier)
+        let timeoutExpectation = expectation(description: "opportunistic scan timeout")
+        collector = ZoneManagerCollectorImpl(opportunisticBeaconScanDuration: 0.01)
+        collector.delegate = delegate
+
+        collector.startOpportunisticBeaconScanning(in: [region], manager: locationManager)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+            timeoutExpectation.fulfill()
+        }
+        wait(for: [timeoutExpectation], timeout: 1)
+
+        XCTAssertEqual(locationManager.stoppedRangingConstraints, [region.beaconIdentityConstraint])
+        XCTAssertTrue(delegate.events.isEmpty)
+    }
+
     func testIgnoredRegions() {
         let region1 = CLCircularRegion(center: .init(latitude: 1, longitude: 2), radius: 30, identifier: "1")
         let region2 = CLCircularRegion(center: .init(latitude: 2, longitude: 1), radius: 30, identifier: "2")

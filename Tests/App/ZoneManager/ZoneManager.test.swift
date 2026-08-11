@@ -554,6 +554,7 @@ private class FakeCollector: NSObject, ZoneManagerCollector {
     var scannedRegions = Set<CLRegion>()
     weak var scanManager: CLLocationManager?
     var stopScanningCount = 0
+    var opportunisticallyScannedRegions = Set<CLRegion>()
 
     func ignoreNextState(for region: CLRegion) {
         ignoringNextStates.insert(region)
@@ -566,6 +567,11 @@ private class FakeCollector: NSObject, ZoneManagerCollector {
 
     func stopForegroundBeaconScanning(manager: CLLocationManager) {
         stopScanningCount += 1
+        scanManager = manager
+    }
+
+    func startOpportunisticBeaconScanning(in regions: Set<CLRegion>, manager: CLLocationManager) {
+        opportunisticallyScannedRegions = regions
         scanManager = manager
     }
 }
