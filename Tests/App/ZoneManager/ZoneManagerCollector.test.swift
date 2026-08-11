@@ -165,6 +165,145 @@ class ZoneManagerCollectorTests: XCTestCase {
         XCTAssertEqual(event.associatedZone, zone)
     }
 
+    func testBeaconEntryRequiresRangingConfirmation() {
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
+
+        collector.locationManager(locationManager, didDetermineState: .inside, for: region)
+
+        XCTAssertTrue(delegate.events.isEmpty)
+        XCTAssertEqual(locationManager.startedRangingConstraints, [region.beaconIdentityConstraint])
+    }
+
+    func testBeaconEntryIsCollectedAfterRangingConfirmation() {
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
+        let beacon = CLBeacon(
+            uuid: region.uuid,
+            major: 0,
+            minor: 0,
+            proximity: .near,
+            accuracy: 1,
+            rssi: -60,
+            timestamp: Date()
+        )
+
+        collector.locationManager(locationManager, didDetermineState: .inside, for: region)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: region.beaconIdentityConstraint
+        )
+
+        XCTAssertEqual(delegate.events, [.init(eventType: .region(region, .inside))])
+        XCTAssertEqual(locationManager.stoppedRangingConstraints, [region.beaconIdentityConstraint])
+    }
+
+    func testBeaconEntryIgnoresUnusableRangingResult() {
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
+        let beacon = CLBeacon(
+            uuid: region.uuid,
+            major: 0,
+            minor: 0,
+            proximity: .unknown,
+            accuracy: -1,
+            rssi: 0,
+            timestamp: Date()
+        )
+
+        collector.locationManager(locationManager, didDetermineState: .inside, for: region)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: region.beaconIdentityConstraint
+        )
+
+        XCTAssertTrue(delegate.events.isEmpty)
+        XCTAssertTrue(locationManager.stoppedRangingConstraints.isEmpty)
+    }
+
+    func testBeaconEntryIsIgnoredWhenRangingTimesOut() {
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
+        let timeoutExpectation = expectation(description: "ranging timeout")
+        collector = ZoneManagerCollectorImpl(beaconVerificationTimeout: 0.01)
+        delegate.onDidLog = { state in
+            if case let .didIgnore(event, ZoneManagerIgnoreReason.beaconEntryNotVerified) = state,
+               event.eventType == .region(region, .inside) {
+                timeoutExpectation.fulfill()
+            }
+        }
+        collector.delegate = delegate
+
+        collector.locationManager(locationManager, didDetermineState: .inside, for: region)
+        wait(for: [timeoutExpectation], timeout: 1)
+
+        XCTAssertTrue(delegate.events.isEmpty)
+        XCTAssertEqual(locationManager.stoppedRangingConstraints, [region.beaconIdentityConstraint])
+    }
+
+    func testBeaconExitIsCollected() {
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
+
+        collector.locationManager(locationManager, didDetermineState: .outside, for: region)
+
+        XCTAssertEqual(delegate.events, [.init(eventType: .region(region, .outside))])
+    }
+
+    func testBeaconExitCancelsPendingEntry() {
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
+        let beacon = CLBeacon(
+            uuid: region.uuid,
+            major: 0,
+            minor: 0,
+            proximity: .near,
+            accuracy: 1,
+            rssi: -60,
+            timestamp: Date()
+        )
+
+        collector.locationManager(locationManager, didDetermineState: .inside, for: region)
+        collector.locationManager(locationManager, didDetermineState: .outside, for: region)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: region.beaconIdentityConstraint
+        )
+
+        XCTAssertEqual(delegate.events, [.init(eventType: .region(region, .outside))])
+        XCTAssertEqual(locationManager.stoppedRangingConstraints, [region.beaconIdentityConstraint])
+    }
+
+    func testBeaconCanEnterAgainAfterExit() {
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
+        let beacon = CLBeacon(
+            uuid: region.uuid,
+            major: 0,
+            minor: 0,
+            proximity: .near,
+            accuracy: 1,
+            rssi: -60,
+            timestamp: Date()
+        )
+
+        collector.locationManager(locationManager, didDetermineState: .inside, for: region)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: region.beaconIdentityConstraint
+        )
+        collector.locationManager(locationManager, didDetermineState: .outside, for: region)
+        collector.locationManager(locationManager, didDetermineState: .inside, for: region)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: region.beaconIdentityConstraint
+        )
+
+        XCTAssertEqual(delegate.events, [
+            .init(eventType: .region(region, .inside)),
+            .init(eventType: .region(region, .outside)),
+            .init(eventType: .region(region, .inside)),
+        ])
+    }
+
     func testDidUpdateLocations() {
         let locations = [
             CLLocation(latitude: 1.23, longitude: 4.56),
@@ -200,9 +339,11 @@ class ZoneManagerCollectorTests: XCTestCase {
 private class FakeZoneManagerCollectorDelegate: ZoneManagerCollectorDelegate {
     var states = [ZoneManagerState]()
     var events = [ZoneManagerEvent]()
+    var onDidLog: ((ZoneManagerState) -> Void)?
 
     func collector(_ collector: ZoneManagerCollector, didLog state: ZoneManagerState) {
         states.append(state)
+        onDidLog?(state)
     }
 
     func collector(_ collector: ZoneManagerCollector, didCollect event: ZoneManagerEvent) {

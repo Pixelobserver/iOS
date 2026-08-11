@@ -13,9 +13,21 @@ protocol ZoneManagerCollector: CLLocationManagerDelegate {
 }
 
 class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
+    private struct PendingBeaconEntry {
+        let event: ZoneManagerEvent
+        let constraint: CLBeaconIdentityConstraint
+        let timeout: DispatchWorkItem
+    }
+
     weak var delegate: ZoneManagerCollectorDelegate?
 
     private var ignoredNextRegions = Set<CLRegion>()
+    private var pendingBeaconEntries = [String: PendingBeaconEntry]()
+    private let beaconVerificationTimeout: TimeInterval
+
+    init(beaconVerificationTimeout: TimeInterval = 5) {
+        self.beaconVerificationTimeout = beaconVerificationTimeout
+    }
 
     func ignoreNextState(for region: CLRegion) {
         ignoredNextRegions.insert(region)
@@ -66,7 +78,36 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             associatedZone: zone
         )
 
+        if let beaconRegion = region as? CLBeaconRegion {
+            switch state {
+            case .inside:
+                verifyBeaconEntry(event, region: beaconRegion, manager: manager)
+                return
+            case .outside:
+                cancelPendingBeaconEntry(for: beaconRegion, manager: manager)
+            case .unknown:
+                break
+            }
+        }
+
         delegate?.collector(self, didCollect: event)
+    }
+
+    func locationManager(
+        _ manager: CLLocationManager,
+        didRange beacons: [CLBeacon],
+        satisfying beaconConstraint: CLBeaconIdentityConstraint
+    ) {
+        guard let identifier = pendingBeaconEntries.first(where: {
+            $0.value.constraint == beaconConstraint
+        })?.key,
+            let pending = pendingBeaconEntries[identifier],
+            beacons.contains(where: { $0.rssi != 0 && $0.proximity != .unknown }) else { return }
+
+        pending.timeout.cancel()
+        pendingBeaconEntries.removeValue(forKey: identifier)
+        manager.stopRangingBeacons(satisfying: pending.constraint)
+        delegate?.collector(self, didCollect: pending.event)
     }
 
     func locationManager(
@@ -78,5 +119,45 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         )
 
         delegate?.collector(self, didCollect: event)
+    }
+
+    private func verifyBeaconEntry(
+        _ event: ZoneManagerEvent,
+        region: CLBeaconRegion,
+        manager: CLLocationManager
+    ) {
+        let identifier = region.identifier
+        let constraint = region.beaconIdentityConstraint
+
+        if let pending = pendingBeaconEntries.removeValue(forKey: identifier) {
+            pending.timeout.cancel()
+            manager.stopRangingBeacons(satisfying: pending.constraint)
+        }
+
+        let timeout = DispatchWorkItem { [weak self, weak manager] in
+            guard let self,
+                  let pending = self.pendingBeaconEntries.removeValue(forKey: identifier) else { return }
+
+            manager?.stopRangingBeacons(satisfying: pending.constraint)
+            self.delegate?.collector(
+                self,
+                didLog: .didIgnore(event, ZoneManagerIgnoreReason.beaconEntryNotVerified)
+            )
+        }
+
+        pendingBeaconEntries[identifier] = PendingBeaconEntry(
+            event: event,
+            constraint: constraint,
+            timeout: timeout
+        )
+        manager.startRangingBeacons(satisfying: constraint)
+        DispatchQueue.main.asyncAfter(deadline: .now() + beaconVerificationTimeout, execute: timeout)
+    }
+
+    private func cancelPendingBeaconEntry(for region: CLBeaconRegion, manager: CLLocationManager) {
+        guard let pending = pendingBeaconEntries.removeValue(forKey: region.identifier) else { return }
+
+        pending.timeout.cancel()
+        manager.stopRangingBeacons(satisfying: pending.constraint)
     }
 }

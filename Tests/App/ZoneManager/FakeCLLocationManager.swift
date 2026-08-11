@@ -7,6 +7,8 @@ class FakeCLLocationManager: CLLocationManager {
     var isMonitoringSigLocChanges = false
     var overrideMonitoredRegions = Set<CLRegion>()
     var requestedRegions = [CLRegion]()
+    var startedRangingConstraints = [CLBeaconIdentityConstraint]()
+    var stoppedRangingConstraints = [CLBeaconIdentityConstraint]()
 
     override var monitoredRegions: Set<CLRegion> {
         overrideMonitoredRegions
@@ -32,5 +34,13 @@ class FakeCLLocationManager: CLLocationManager {
 
     override func requestState(for region: CLRegion) {
         requestedRegions.append(region)
+    }
+
+    override func startRangingBeacons(satisfying constraint: CLBeaconIdentityConstraint) {
+        startedRangingConstraints.append(constraint)
+    }
+
+    override func stopRangingBeacons(satisfying constraint: CLBeaconIdentityConstraint) {
+        stoppedRangingConstraints.append(constraint)
     }
 }
