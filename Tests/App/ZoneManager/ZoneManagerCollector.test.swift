@@ -174,6 +174,52 @@ class ZoneManagerCollectorTests: XCTestCase {
         XCTAssertEqual(locationManager.startedRangingConstraints, [region.beaconIdentityConstraint])
     }
 
+    func testForegroundScanStartsRangingForBeaconOutsideZone() throws {
+        let server = Server.fake()
+        let zone = AppZone(
+            entityId: "beacon_region",
+            serverIdentifier: server.identifier.rawValue,
+            inRegion: false
+        )
+        try database.write { db in
+            try zone.save(db)
+        }
+        let region = CLBeaconRegion(uuid: UUID(), identifier: zone.identifier)
+
+        collector.scanForBeaconEntries(in: [region], manager: locationManager)
+
+        XCTAssertEqual(locationManager.startedRangingConstraints, [region.beaconIdentityConstraint])
+    }
+
+    func testForegroundScanSkipsBeaconAlreadyInsideZone() throws {
+        let server = Server.fake()
+        let zone = AppZone(
+            entityId: "beacon_region",
+            serverIdentifier: server.identifier.rawValue,
+            inRegion: true
+        )
+        try database.write { db in
+            try zone.save(db)
+        }
+        let region = CLBeaconRegion(uuid: UUID(), identifier: zone.identifier)
+
+        collector.scanForBeaconEntries(in: [region], manager: locationManager)
+
+        XCTAssertTrue(locationManager.startedRangingConstraints.isEmpty)
+    }
+
+    func testForegroundScanIgnoresCircularRegions() {
+        let region = CLCircularRegion(
+            center: .init(latitude: 1, longitude: 2),
+            radius: 20,
+            identifier: "circular"
+        )
+
+        collector.scanForBeaconEntries(in: [region], manager: locationManager)
+
+        XCTAssertTrue(locationManager.startedRangingConstraints.isEmpty)
+    }
+
     func testBeaconEntryIsCollectedAfterRangingConfirmation() {
         let region = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
         let beacon = CLBeacon(

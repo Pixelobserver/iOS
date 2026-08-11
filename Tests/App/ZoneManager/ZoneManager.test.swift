@@ -94,6 +94,23 @@ class ZoneManagerTests: XCTestCase {
         )
     }
 
+    func testBecomingActiveScansMonitoredBeaconRegions() {
+        let beaconRegion = CLBeaconRegion(uuid: UUID(), identifier: "beacon")
+        let circularRegion = CLCircularRegion(
+            center: .init(latitude: 1, longitude: 2),
+            radius: 20,
+            identifier: "circular"
+        )
+        locationManager.overrideMonitoredRegions = [beaconRegion, circularRegion]
+        regionFilter.regionsBlock = { AnyCollection([beaconRegion, circularRegion]) }
+
+        let manager = newZoneManager()
+        manager.applicationDidBecomeActive()
+
+        XCTAssertEqual(collector.scannedRegions, locationManager.monitoredRegions)
+        XCTAssertTrue(collector.scanManager === locationManager)
+    }
+
     private func addedZones(_ toAdd: [AppZone]) throws -> [AppZone] {
         try database.write { db in
             for zone in toAdd {
@@ -531,9 +548,16 @@ private class FakeCollector: NSObject, ZoneManagerCollector {
     var delegate: ZoneManagerCollectorDelegate?
 
     var ignoringNextStates = Set<CLRegion>()
+    var scannedRegions = Set<CLRegion>()
+    weak var scanManager: CLLocationManager?
 
     func ignoreNextState(for region: CLRegion) {
         ignoringNextStates.insert(region)
+    }
+
+    func scanForBeaconEntries(in regions: Set<CLRegion>, manager: CLLocationManager) {
+        scannedRegions = regions
+        scanManager = manager
     }
 }
 

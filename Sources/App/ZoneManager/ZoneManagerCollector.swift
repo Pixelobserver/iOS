@@ -10,6 +10,7 @@ protocol ZoneManagerCollectorDelegate: AnyObject {
 protocol ZoneManagerCollector: CLLocationManagerDelegate {
     var delegate: ZoneManagerCollectorDelegate? { get set }
     func ignoreNextState(for region: CLRegion)
+    func scanForBeaconEntries(in regions: Set<CLRegion>, manager: CLLocationManager)
 }
 
 class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
@@ -31,6 +32,15 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
     func ignoreNextState(for region: CLRegion) {
         ignoredNextRegions.insert(region)
+    }
+
+    func scanForBeaconEntries(in regions: Set<CLRegion>, manager: CLLocationManager) {
+        for region in regions.compactMap({ $0 as? CLBeaconRegion }) {
+            let event = Self.event(for: region, state: .inside)
+            guard event.associatedZone?.inRegion == false else { continue }
+
+            verifyBeaconEntry(event, region: region, manager: manager)
+        }
     }
 
     func locationManager(
@@ -65,18 +75,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             return
         }
 
-        // regions for small zones are suffixed with "@<angle>"; the zone's
-        // identifier is the prefix
-        let baseIdentifier = region.identifier.components(separatedBy: "@").first ?? region.identifier
-        var zone = AppZone.zone(identifier: region.identifier)
-        if zone == nil, baseIdentifier != region.identifier {
-            zone = AppZone.zone(identifier: baseIdentifier)
-        }
-
-        let event = ZoneManagerEvent(
-            eventType: .region(region, state),
-            associatedZone: zone
-        )
+        let event = Self.event(for: region, state: state)
 
         if let beaconRegion = region as? CLBeaconRegion {
             switch state {
@@ -159,5 +158,20 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         pending.timeout.cancel()
         manager.stopRangingBeacons(satisfying: pending.constraint)
+    }
+
+    private static func event(for region: CLRegion, state: CLRegionState) -> ZoneManagerEvent {
+        // regions for small zones are suffixed with "@<angle>"; the zone's
+        // identifier is the prefix
+        let baseIdentifier = region.identifier.components(separatedBy: "@").first ?? region.identifier
+        var zone = AppZone.zone(identifier: region.identifier)
+        if zone == nil, baseIdentifier != region.identifier {
+            zone = AppZone.zone(identifier: baseIdentifier)
+        }
+
+        return ZoneManagerEvent(
+            eventType: .region(region, state),
+            associatedZone: zone
+        )
     }
 }

@@ -39,15 +39,31 @@ class ZoneManager {
             name: SettingsStore.locationRelatedSettingDidChange,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
     }
 
     deinit {
         observationToken?.cancel()
+        NotificationCenter.default.removeObserver(self)
         Current.Log.info("going away")
     }
 
     @objc private func locationSettingDidChange() {
         updateLocationManager(isInitial: false)
+    }
+
+    @objc func applicationDidBecomeActive() {
+        guard Current.settingsStore.locationSources.zone else { return }
+
+        collector.scanForBeaconEntries(
+            in: locationManager.monitoredRegions,
+            manager: locationManager
+        )
     }
 
     private func updateLocationManager(isInitial: Bool) {
