@@ -45,6 +45,12 @@ class ZoneManager {
             name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillResignActive),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
     }
 
     deinit {
@@ -60,10 +66,14 @@ class ZoneManager {
     @objc func applicationDidBecomeActive() {
         guard Current.settingsStore.locationSources.zone else { return }
 
-        collector.scanForBeaconEntries(
+        collector.startForegroundBeaconScanning(
             in: locationManager.monitoredRegions,
             manager: locationManager
         )
+    }
+
+    @objc func applicationWillResignActive() {
+        collector.stopForegroundBeaconScanning(manager: locationManager)
     }
 
     private func updateLocationManager(isInitial: Bool) {

@@ -109,6 +109,9 @@ class ZoneManagerTests: XCTestCase {
 
         XCTAssertEqual(collector.scannedRegions, locationManager.monitoredRegions)
         XCTAssertTrue(collector.scanManager === locationManager)
+
+        manager.applicationWillResignActive()
+        XCTAssertEqual(collector.stopScanningCount, 1)
     }
 
     private func addedZones(_ toAdd: [AppZone]) throws -> [AppZone] {
@@ -550,13 +553,19 @@ private class FakeCollector: NSObject, ZoneManagerCollector {
     var ignoringNextStates = Set<CLRegion>()
     var scannedRegions = Set<CLRegion>()
     weak var scanManager: CLLocationManager?
+    var stopScanningCount = 0
 
     func ignoreNextState(for region: CLRegion) {
         ignoringNextStates.insert(region)
     }
 
-    func scanForBeaconEntries(in regions: Set<CLRegion>, manager: CLLocationManager) {
+    func startForegroundBeaconScanning(in regions: Set<CLRegion>, manager: CLLocationManager) {
         scannedRegions = regions
+        scanManager = manager
+    }
+
+    func stopForegroundBeaconScanning(manager: CLLocationManager) {
+        stopScanningCount += 1
         scanManager = manager
     }
 }
