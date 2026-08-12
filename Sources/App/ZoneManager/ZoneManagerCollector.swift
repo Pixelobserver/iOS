@@ -24,7 +24,13 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
     private struct ForegroundBeaconEntry {
         let event: ZoneManagerEvent
+        let region: CLBeaconRegion
         let constraint: CLBeaconIdentityConstraint
+    }
+
+    private struct BeaconReconciliationState {
+        var emptySampleCount = 0
+        var firstEmptySampleAt: Date?
     }
 
     weak var delegate: ZoneManagerCollectorDelegate?
@@ -34,16 +40,23 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
     private var foregroundBeaconEntries = [String: ForegroundBeaconEntry]()
     private var foregroundBeaconIdentifiersInside = Set<String>()
     private var opportunisticBeaconEntries = [String: ForegroundBeaconEntry]()
+    private var beaconReconciliationStates = [String: BeaconReconciliationState]()
     private var opportunisticBeaconScanTimeout: DispatchWorkItem?
     private let beaconVerificationTimeout: TimeInterval
     private let opportunisticBeaconScanDuration: TimeInterval
+    private let beaconExitReconciliationDuration: TimeInterval
+    private let beaconExitMinimumEmptySamples: Int
 
     init(
         beaconVerificationTimeout: TimeInterval = 5,
-        opportunisticBeaconScanDuration: TimeInterval = 8
+        opportunisticBeaconScanDuration: TimeInterval = 10,
+        beaconExitReconciliationDuration: TimeInterval = 8,
+        beaconExitMinimumEmptySamples: Int = 3
     ) {
         self.beaconVerificationTimeout = beaconVerificationTimeout
         self.opportunisticBeaconScanDuration = opportunisticBeaconScanDuration
+        self.beaconExitReconciliationDuration = beaconExitReconciliationDuration
+        self.beaconExitMinimumEmptySamples = beaconExitMinimumEmptySamples
     }
 
     func ignoreNextState(for region: CLRegion) {
@@ -59,6 +72,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
             foregroundBeaconEntries[region.identifier] = ForegroundBeaconEntry(
                 event: event,
+                region: region,
                 constraint: region.beaconIdentityConstraint
             )
             if zone.inRegion {
@@ -76,6 +90,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         foregroundBeaconEntries.removeAll()
         foregroundBeaconIdentifiersInside.removeAll()
+        beaconReconciliationStates.removeAll()
     }
 
     func startOpportunisticBeaconScanning(in regions: Set<CLRegion>, manager: CLLocationManager) {
@@ -87,12 +102,16 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         for region in regions.compactMap({ $0 as? CLBeaconRegion }) {
             let event = Self.event(for: region, state: .inside)
-            guard let zone = event.associatedZone, !zone.inRegion else { continue }
+            guard let zone = event.associatedZone else { continue }
 
             opportunisticBeaconEntries[region.identifier] = ForegroundBeaconEntry(
                 event: event,
+                region: region,
                 constraint: region.beaconIdentityConstraint
             )
+            if zone.inRegion {
+                foregroundBeaconIdentifiersInside.insert(region.identifier)
+            }
             manager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
         }
 
@@ -100,6 +119,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         let timeout = DispatchWorkItem { [weak self, weak manager] in
             guard let self, let manager else { return }
+            self.reconcileBeaconExits()
             self.stopOpportunisticBeaconScanning(manager: manager)
         }
         opportunisticBeaconScanTimeout = timeout
@@ -116,6 +136,8 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         for (identifier, entry) in opportunisticBeaconEntries
             where foregroundBeaconEntries[identifier] == nil && pendingBeaconEntries[identifier] == nil {
             manager.stopRangingBeacons(satisfying: entry.constraint)
+            foregroundBeaconIdentifiersInside.remove(identifier)
+            beaconReconciliationStates.removeValue(forKey: identifier)
         }
         opportunisticBeaconEntries.removeAll()
     }
@@ -187,7 +209,16 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             $0.value.constraint == beaconConstraint
         })?.key
 
-        guard beacons.contains(where: { $0.rssi != 0 && $0.proximity != .unknown }) else { return }
+        guard beacons.contains(where: { $0.rssi != 0 && $0.proximity != .unknown }) else {
+            reconcileEmptyBeaconSample(
+                identifiers: [pendingIdentifier, foregroundIdentifier, opportunisticIdentifier].compactMap { $0 }
+            )
+            return
+        }
+
+        [pendingIdentifier, foregroundIdentifier, opportunisticIdentifier]
+            .compactMap { $0 }
+            .forEach { beaconReconciliationStates.removeValue(forKey: $0) }
 
         var event: ZoneManagerEvent?
         if let pendingIdentifier,
@@ -214,6 +245,8 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             event = event ?? opportunistic.event
             if foregroundIdentifier == nil && pendingBeaconEntries[opportunisticIdentifier] == nil {
                 manager.stopRangingBeacons(satisfying: opportunistic.constraint)
+                foregroundBeaconIdentifiersInside.remove(opportunisticIdentifier)
+                beaconReconciliationStates.removeValue(forKey: opportunisticIdentifier)
             }
         }
 
@@ -286,6 +319,44 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         if foregroundBeaconEntries[region.identifier] == nil && pendingBeaconEntries[region.identifier] == nil {
             manager.stopRangingBeacons(satisfying: entry.constraint)
+        }
+    }
+
+    private func reconcileEmptyBeaconSample(identifiers: [String]) {
+        let now = Date()
+
+        for identifier in Set(identifiers) where foregroundBeaconIdentifiersInside.contains(identifier) {
+            var state = beaconReconciliationStates[identifier] ?? BeaconReconciliationState()
+            state.emptySampleCount += 1
+            state.firstEmptySampleAt = state.firstEmptySampleAt ?? now
+            beaconReconciliationStates[identifier] = state
+        }
+
+        reconcileBeaconExits(now: now)
+    }
+
+    private func reconcileBeaconExits(now: Date = Date()) {
+        let identifiersToExit = beaconReconciliationStates.compactMap { identifier, state -> String? in
+            guard state.emptySampleCount >= beaconExitMinimumEmptySamples,
+                  let firstEmptySampleAt = state.firstEmptySampleAt,
+                  now.timeIntervalSince(firstEmptySampleAt) >= beaconExitReconciliationDuration,
+                  foregroundBeaconIdentifiersInside.contains(identifier),
+                  foregroundBeaconEntries[identifier] != nil || opportunisticBeaconEntries[identifier] != nil
+            else { return nil }
+
+            return identifier
+        }
+
+        for identifier in identifiersToExit {
+            guard foregroundBeaconIdentifiersInside.remove(identifier) != nil,
+                  let entry = foregroundBeaconEntries[identifier] ?? opportunisticBeaconEntries[identifier]
+            else { continue }
+
+            beaconReconciliationStates.removeValue(forKey: identifier)
+            delegate?.collector(
+                self,
+                didCollect: Self.event(for: entry.region, state: .outside)
+            )
         }
     }
 
