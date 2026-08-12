@@ -182,7 +182,7 @@ class ZoneManager {
                 return
             }
             let eventInfo = api.zoneStateEvent(region: region, state: state, zone: zone)
-            api.CreateEvent(eventType: eventInfo.eventType, eventData: eventInfo.eventData).pipe { result in
+            api.CreatePersistentEvent(eventType: eventInfo.eventType, eventData: eventInfo.eventData).pipe { result in
                 switch result {
                 case .fulfilled:
                     Current.Log.info("Fired ZoneManager event")

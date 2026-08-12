@@ -380,6 +380,22 @@ public class HomeAssistantAPI {
         )
     }
 
+    /// Sends an event using the persisted webhook transport.
+    ///
+    /// Use this for events created during background execution that must remain owned by the
+    /// system if the app is suspended before the request completes. Unlike `CreateEvent`, this
+    /// method uses the background-capable webhook session and does not send a second ephemeral
+    /// request, avoiding duplicate events.
+    public func CreatePersistentEvent(eventType: String, eventData: [String: Any]) -> Promise<Void> {
+        Current.webhooks.send(
+            server: server,
+            request: .init(type: "fire_event", data: [
+                "event_type": eventType,
+                "event_data": eventData,
+            ])
+        )
+    }
+
     public func temporaryDownloadFileURL(appropriateFor downloadingURL: URL? = nil) -> URL? {
         let url = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             // using a random file name so we always have one, see https://github.com/home-assistant/iOS/issues/1068

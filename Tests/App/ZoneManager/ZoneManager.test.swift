@@ -459,6 +459,7 @@ class ZoneManagerTests: XCTestCase {
         let createdEvent1 = try hang(api.createdEventPromise)
         XCTAssertEqual(createdEvent1.eventType, "ios.zone_entered")
         XCTAssertEqual(createdEvent1.eventData["zone"] as? String, "zone.zid")
+        XCTAssertEqual(api.ephemeralEventCount, 0)
         XCTAssertEqual(createdEvent1.eventData["multi_region_zone_id"] as? String, "868")
 
         api.resetCreatedEventInfo()
@@ -469,6 +470,7 @@ class ZoneManagerTests: XCTestCase {
         let createdEvent2 = try hang(api.createdEventPromise)
         XCTAssertEqual(createdEvent2.eventType, "ios.zone_exited")
         XCTAssertEqual(createdEvent2.eventData["zone"] as? String, "zone.zid")
+        XCTAssertEqual(api.ephemeralEventCount, 0)
         XCTAssertEqual(createdEvent2.eventData["multi_region_zone_id"] as? String, "868")
     }
 
@@ -615,8 +617,14 @@ private class FakeHassAPI: HomeAssistantAPI {
 
     var createdEventPromise: Promise<CreatedEventInfo>!
     var createdEventSeal: Resolver<CreatedEventInfo>?
+    var ephemeralEventCount = 0
 
     override func CreateEvent(eventType: String, eventData: [String: Any]) -> Promise<Void> {
+        ephemeralEventCount += 1
+        return .value(())
+    }
+
+    override func CreatePersistentEvent(eventType: String, eventData: [String: Any]) -> Promise<Void> {
         createdEventSeal?.fulfill((eventType: eventType, eventData: eventData))
         return .value(())
     }
