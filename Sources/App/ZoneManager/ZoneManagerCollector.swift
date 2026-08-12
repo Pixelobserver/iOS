@@ -209,7 +209,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             $0.value.constraint == beaconConstraint
         })?.key
 
-        guard beacons.contains(where: { $0.rssi != 0 && $0.proximity != .unknown }) else {
+        guard beacons.contains(where: Self.isBeaconInsideRange) else {
             reconcileEmptyBeaconSample(
                 identifiers: [pendingIdentifier, foregroundIdentifier, opportunisticIdentifier].compactMap { $0 }
             )
@@ -357,6 +357,19 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
                 self,
                 didCollect: Self.event(for: entry.region, state: .outside)
             )
+        }
+    }
+
+    private static func isBeaconInsideRange(_ beacon: CLBeacon) -> Bool {
+        guard beacon.rssi != 0 else { return false }
+
+        switch beacon.proximity {
+        case .immediate, .near:
+            return true
+        case .far, .unknown:
+            return false
+        @unknown default:
+            return false
         }
     }
 

@@ -608,6 +608,77 @@ class ZoneManagerCollectorTests: XCTestCase {
         XCTAssertTrue(delegate.events.isEmpty)
     }
 
+    func testFarBeaconDoesNotCreateEntry() throws {
+        let server = Server.fake()
+        let zone = AppZone(
+            entityId: "beacon_region",
+            serverIdentifier: server.identifier.rawValue,
+            inRegion: false
+        )
+        try database.write { db in
+            try zone.save(db)
+        }
+        let region = CLBeaconRegion(uuid: UUID(), identifier: zone.identifier)
+        let beacon = CLBeacon(
+            uuid: region.uuid,
+            major: 0,
+            minor: 0,
+            proximity: .far,
+            accuracy: 8,
+            rssi: -90,
+            timestamp: Date()
+        )
+
+        collector.startForegroundBeaconScanning(in: [region], manager: locationManager)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: region.beaconIdentityConstraint
+        )
+
+        XCTAssertTrue(delegate.events.isEmpty)
+    }
+
+    func testFarBeaconReconcilesInsideZoneToExit() throws {
+        let server = Server.fake()
+        let zone = AppZone(
+            entityId: "beacon_region",
+            serverIdentifier: server.identifier.rawValue,
+            inRegion: true
+        )
+        try database.write { db in
+            try zone.save(db)
+        }
+        let region = CLBeaconRegion(uuid: UUID(), identifier: zone.identifier)
+        let beacon = CLBeacon(
+            uuid: region.uuid,
+            major: 0,
+            minor: 0,
+            proximity: .far,
+            accuracy: 8,
+            rssi: -90,
+            timestamp: Date()
+        )
+        collector = ZoneManagerCollectorImpl(
+            beaconExitReconciliationDuration: 0,
+            beaconExitMinimumEmptySamples: 3
+        )
+        collector.delegate = delegate
+
+        collector.startForegroundBeaconScanning(in: [region], manager: locationManager)
+        for _ in 0 ..< 3 {
+            collector.locationManager(
+                locationManager,
+                didRange: [beacon],
+                satisfying: region.beaconIdentityConstraint
+            )
+        }
+
+        XCTAssertEqual(delegate.events, [
+            .init(eventType: .region(region, .outside), associatedZone: zone),
+        ])
+    }
+
     func testOpportunisticScanCollectsEntryAndStopsRanging() throws {
         let server = Server.fake()
         let zone = AppZone(
