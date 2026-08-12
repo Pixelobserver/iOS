@@ -9,9 +9,19 @@ class FakeCLLocationManager: CLLocationManager {
     var requestedRegions = [CLRegion]()
     var startedRangingConstraints = [CLBeaconIdentityConstraint]()
     var stoppedRangingConstraints = [CLBeaconIdentityConstraint]()
+    var requestAlwaysAuthorizationCount = 0
+    var overrideAuthorizationStatus: CLAuthorizationStatus = .authorizedAlways
 
     override var monitoredRegions: Set<CLRegion> {
         overrideMonitoredRegions
+    }
+
+    override var authorizationStatus: CLAuthorizationStatus {
+        overrideAuthorizationStatus
+    }
+
+    override func requestAlwaysAuthorization() {
+        requestAlwaysAuthorizationCount += 1
     }
 
     override func startMonitoring(for region: CLRegion) {

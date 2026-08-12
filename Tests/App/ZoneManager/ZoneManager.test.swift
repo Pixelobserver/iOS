@@ -29,6 +29,18 @@ final class MockClientEventStore: ClientEventStoreProtocol {
     }
 }
 
+private final class FakeZoneEventOutbox: ZoneEventOutbox {
+    var pendingEvents = [PendingZoneEvent]()
+
+    func append(_ event: PendingZoneEvent) {
+        pendingEvents.append(event)
+    }
+
+    func remove(id: UUID) {
+        pendingEvents.removeAll { $0.id == id }
+    }
+}
+
 class ZoneManagerTests: XCTestCase {
     private var database: DatabaseQueue!
     private var previousDatabase: (() -> DatabaseQueue)!
@@ -85,12 +97,13 @@ class ZoneManagerTests: XCTestCase {
         super.tearDown()
     }
 
-    private func newZoneManager() -> ZoneManager {
+    private func newZoneManager(zoneEventOutbox: ZoneEventOutbox = FakeZoneEventOutbox()) -> ZoneManager {
         ZoneManager(
             locationManager: locationManager,
             collector: collector,
             processor: processor,
-            regionFilter: regionFilter
+            regionFilter: regionFilter,
+            zoneEventOutbox: zoneEventOutbox
         )
     }
 
@@ -430,6 +443,44 @@ class ZoneManagerTests: XCTestCase {
         XCTAssertEqual(createdEvent2.eventData["zone"] as? String, "zone.zid")
     }
 
+    func testFailedZoneEventIsQueuedAndRetriedWhenAppBecomesActive() throws {
+        let outbox = FakeZoneEventOutbox()
+        let manager = newZoneManager(zoneEventOutbox: outbox)
+        let api = apis[1]
+        let region = CLCircularRegion(
+            center: .init(latitude: 42.4242, longitude: 43.4343),
+            radius: 456,
+            identifier: "dogs"
+        )
+        let zone = try addedZones([
+            AppZone(
+                entityId: "zone.zid",
+                serverIdentifier: api.server.identifier.rawValue,
+                latitude: 42.2222,
+                longitude: 43.3333,
+                radius: 100,
+                trackingEnabled: true
+            ),
+        ])[0]
+        processor.promiseToReturn = .value(())
+        api.persistentEventResult = .init(error: TestError.anyError)
+
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .inside),
+            associatedZone: zone
+        ))
+
+        let queued = expectation(for: NSPredicate(block: { _, _ in outbox.pendingEvents.count == 1 }))
+        wait(for: [queued], timeout: 1)
+        XCTAssertEqual(outbox.pendingEvents.first?.eventType, "ios.zone_entered")
+
+        api.persistentEventResult = .value(())
+        manager.applicationDidBecomeActive()
+
+        let drained = expectation(for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }))
+        wait(for: [drained], timeout: 1)
+    }
+
     func testCollectorCollectsMultipleRegionZoneAndEventFires() throws {
         let manager = newZoneManager()
         let api = apis[1]
@@ -618,6 +669,7 @@ private class FakeHassAPI: HomeAssistantAPI {
     var createdEventPromise: Promise<CreatedEventInfo>!
     var createdEventSeal: Resolver<CreatedEventInfo>?
     var ephemeralEventCount = 0
+    var persistentEventResult: Promise<Void> = .value(())
 
     override func CreateEvent(eventType: String, eventData: [String: Any]) -> Promise<Void> {
         ephemeralEventCount += 1
@@ -626,6 +678,6 @@ private class FakeHassAPI: HomeAssistantAPI {
 
     override func CreatePersistentEvent(eventType: String, eventData: [String: Any]) -> Promise<Void> {
         createdEventSeal?.fulfill((eventType: eventType, eventData: eventData))
-        return .value(())
+        return persistentEventResult
     }
 }

@@ -71,6 +71,78 @@ class ZoneManagerCollectorTests: XCTestCase {
         }
     }
 
+    func testWhenInUseAuthorizationRequestsAlwaysAuthorization() {
+        locationManager.overrideAuthorizationStatus = .authorizedWhenInUse
+
+        collector.locationManagerDidChangeAuthorization(locationManager)
+
+        XCTAssertEqual(locationManager.requestAlwaysAuthorizationCount, 1)
+    }
+
+    func testAlwaysAuthorizationDoesNotRequestAgain() {
+        locationManager.overrideAuthorizationStatus = .authorizedAlways
+
+        collector.locationManagerDidChangeAuthorization(locationManager)
+
+        XCTAssertEqual(locationManager.requestAlwaysAuthorizationCount, 0)
+    }
+
+    func testRangingFailureRetriesActiveConstraintAtMostTwice() {
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
+        collector = ZoneManagerCollectorImpl(beaconRangingRetryLimit: 2, beaconRangingRetryDelay: 0)
+        collector.delegate = delegate
+        collector.locationManager(locationManager, didDetermineState: .inside, for: region)
+
+        collector.locationManager(
+            locationManager,
+            rangingBeaconsDidFailFor: region.beaconIdentityConstraint,
+            withError: TestError.anyError
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        collector.locationManager(
+            locationManager,
+            rangingBeaconsDidFailFor: region.beaconIdentityConstraint,
+            withError: TestError.anyError
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        collector.locationManager(
+            locationManager,
+            rangingBeaconsDidFailFor: region.beaconIdentityConstraint,
+            withError: TestError.anyError
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+
+        XCTAssertEqual(locationManager.startedRangingConstraints.count, 3)
+    }
+
+    func testSharedBeaconConstraintRoutesEntryToEveryRegion() {
+        let uuid = UUID()
+        let first = CLBeaconRegion(uuid: uuid, identifier: "first")
+        let second = CLBeaconRegion(uuid: uuid, identifier: "second")
+        let beacon = CLBeacon(
+            uuid: uuid,
+            major: 0,
+            minor: 0,
+            proximity: .near,
+            accuracy: 1,
+            rssi: -55,
+            timestamp: Date()
+        )
+
+        collector.locationManager(locationManager, didDetermineState: .inside, for: first)
+        collector.locationManager(locationManager, didDetermineState: .inside, for: second)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: first.beaconIdentityConstraint
+        )
+
+        XCTAssertEqual(Set(delegate.events.map(\.description)), Set([
+            ZoneManagerEvent(eventType: .region(first, .inside)).description,
+            ZoneManagerEvent(eventType: .region(second, .inside)).description,
+        ]))
+    }
+
     func testDidStartMonitoringLogsButDoesntRequestState() {
         let region = CLCircularRegion()
         collector.locationManager(locationManager, didStartMonitoringFor: region)
@@ -277,6 +349,40 @@ class ZoneManagerCollectorTests: XCTestCase {
         XCTAssertTrue(locationManager.stoppedRangingConstraints.isEmpty)
     }
 
+    func testForegroundAndPendingVerificationEmitOnlyOneEntry() throws {
+        let server = Server.fake()
+        let zone = AppZone(
+            entityId: "beacon_region",
+            serverIdentifier: server.identifier.rawValue,
+            inRegion: false
+        )
+        try database.write { db in
+            try zone.save(db)
+        }
+        let region = CLBeaconRegion(uuid: UUID(), identifier: zone.identifier)
+        let beacon = CLBeacon(
+            uuid: region.uuid,
+            major: 0,
+            minor: 0,
+            proximity: .near,
+            accuracy: 1,
+            rssi: -60,
+            timestamp: Date()
+        )
+
+        collector.startForegroundBeaconScanning(in: [region], manager: locationManager)
+        collector.locationManager(locationManager, didDetermineState: .inside, for: region)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: region.beaconIdentityConstraint
+        )
+
+        XCTAssertEqual(delegate.events, [
+            .init(eventType: .region(region, .inside), associatedZone: zone),
+        ])
+    }
+
     func testForegroundScanCanEnterAgainAfterExit() throws {
         let server = Server.fake()
         let zone = AppZone(
@@ -362,6 +468,45 @@ class ZoneManagerCollectorTests: XCTestCase {
 
         XCTAssertTrue(delegate.events.isEmpty)
         XCTAssertTrue(locationManager.stoppedRangingConstraints.isEmpty)
+    }
+
+    func testFarBeaconCanBecomeNearDuringExtendedVerificationWindow() {
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
+        let farBeacon = CLBeacon(
+            uuid: region.uuid,
+            major: 0,
+            minor: 0,
+            proximity: .far,
+            accuracy: 8,
+            rssi: -85,
+            timestamp: Date()
+        )
+        let nearBeacon = CLBeacon(
+            uuid: region.uuid,
+            major: 0,
+            minor: 0,
+            proximity: .near,
+            accuracy: 1,
+            rssi: -55,
+            timestamp: Date()
+        )
+        collector = ZoneManagerCollectorImpl(beaconVerificationTimeout: 0.1)
+        collector.delegate = delegate
+
+        collector.locationManager(locationManager, didDetermineState: .inside, for: region)
+        collector.locationManager(
+            locationManager,
+            didRange: [farBeacon],
+            satisfying: region.beaconIdentityConstraint
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        collector.locationManager(
+            locationManager,
+            didRange: [nearBeacon],
+            satisfying: region.beaconIdentityConstraint
+        )
+
+        XCTAssertEqual(delegate.events, [.init(eventType: .region(region, .inside))])
     }
 
     func testBeaconEntryIsIgnoredWhenRangingTimesOut() {

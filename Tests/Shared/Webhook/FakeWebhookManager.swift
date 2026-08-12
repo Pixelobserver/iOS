@@ -4,12 +4,26 @@ import PromiseKit
 
 class FakeWebhookManager: WebhookManager {
     var sendRequestHandler: ((WebhookResponseIdentifier, Server, WebhookRequest, Resolver<Void>) -> Void)?
+    private(set) var sendCount = 0
+    private(set) var sendPersistedBackgroundCount = 0
 
     override func send(
         identifier: WebhookResponseIdentifier = .unhandled,
         server: Server,
         request: WebhookRequest
     ) -> Promise<Void> {
+        sendCount += 1
+        let (promise, seal) = Promise<Void>.pending()
+        sendRequestHandler?(identifier, server, request, seal)
+        return promise
+    }
+
+    override func sendPersistedBackground(
+        identifier: WebhookResponseIdentifier = .unhandled,
+        server: Server,
+        request: WebhookRequest
+    ) -> Promise<Void> {
+        sendPersistedBackgroundCount += 1
         let (promise, seal) = Promise<Void>.pending()
         sendRequestHandler?(identifier, server, request, seal)
         return promise

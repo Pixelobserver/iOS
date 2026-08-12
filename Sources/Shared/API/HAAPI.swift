@@ -387,7 +387,7 @@ public class HomeAssistantAPI {
     /// method uses the background-capable webhook session and does not send a second ephemeral
     /// request, avoiding duplicate events.
     public func CreatePersistentEvent(eventType: String, eventData: [String: Any]) -> Promise<Void> {
-        Current.webhooks.send(
+        Current.webhooks.sendPersistedBackground(
             server: server,
             request: .init(type: "fire_event", data: [
                 "event_type": eventType,

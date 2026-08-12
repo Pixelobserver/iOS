@@ -374,6 +374,31 @@ public class WebhookManager: NSObject {
         return promise
     }
 
+    /// Sends directly on the persisted background URL session and waits for the response.
+    ///
+    /// Unlike `send`, this never tries the regular session first. Use it for small, important
+    /// events emitted while iOS may suspend the app at any moment.
+    public func sendPersistedBackground(
+        identifier: WebhookResponseIdentifier = .unhandled,
+        server: Server,
+        request: WebhookRequest
+    ) -> Promise<Void> {
+        let (promise, seal) = Promise<Void>.pending()
+
+        dataQueue.async { [self] in
+            send(
+                on: currentBackgroundSessionInfo,
+                server: server,
+                identifier: identifier,
+                request: request,
+                waitForResponse: true
+            )
+            .pipe(to: seal.resolve)
+        }
+
+        return promise
+    }
+
     private func send(
         on sessionInfo: WebhookSessionInfo,
         server: Server,

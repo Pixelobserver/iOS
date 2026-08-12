@@ -10,20 +10,24 @@ class ZoneManager {
     let collector: ZoneManagerCollector
     let processor: ZoneManagerProcessor
     let regionFilter: ZoneManagerRegionFilter
+    let zoneEventOutbox: ZoneEventOutbox
     private(set) var zones: [AppZone]
 
     private var observationToken: AnyDatabaseCancellable?
+    private var drainingZoneEventIDs = Set<UUID>()
 
     init(
         locationManager: CLLocationManager = .init(),
         collector: ZoneManagerCollector = ZoneManagerCollectorImpl(),
         processor: ZoneManagerProcessor = ZoneManagerProcessorImpl(),
-        regionFilter: ZoneManagerRegionFilter = ZoneManagerRegionFilterImpl()
+        regionFilter: ZoneManagerRegionFilter = ZoneManagerRegionFilterImpl(),
+        zoneEventOutbox: ZoneEventOutbox = UserDefaultsZoneEventOutbox()
     ) {
         self.locationManager = locationManager
         self.collector = collector
         self.processor = processor
         self.regionFilter = regionFilter
+        self.zoneEventOutbox = zoneEventOutbox
         self.zones = AppZone.trackedZones()
 
         self.collector.delegate = self
@@ -32,6 +36,9 @@ class ZoneManager {
         log(state: .initialize)
 
         updateLocationManager(isInitial: true)
+        DispatchQueue.main.async { [weak self] in
+            self?.flushPendingZoneEvents()
+        }
 
         NotificationCenter.default.addObserver(
             self,
@@ -65,6 +72,8 @@ class ZoneManager {
 
     @objc func applicationDidBecomeActive() {
         guard Current.settingsStore.locationSources.zone else { return }
+
+        flushPendingZoneEvents()
 
         collector.startForegroundBeaconScanning(
             in: locationManager.monitoredRegions,
@@ -172,6 +181,11 @@ class ZoneManager {
     }
 
     private func fire(event: ZoneManagerEvent) {
+        if case .locationChange = event.eventType {
+            flushPendingZoneEvents()
+            return
+        }
+
         guard let zone = event.associatedZone,
               let server = Current.servers.server(forServerIdentifier: zone.serverIdentifier) else { return }
 
@@ -182,24 +196,93 @@ class ZoneManager {
                 return
             }
             let eventInfo = api.zoneStateEvent(region: region, state: state, zone: zone)
-            api.CreatePersistentEvent(eventType: eventInfo.eventType, eventData: eventInfo.eventData).pipe { result in
-                switch result {
-                case .fulfilled:
-                    Current.Log.info("Fired ZoneManager event")
-                case let .rejected(error):
-                    let message = "Failed to fire ZoneManager event: \(error.localizedDescription)"
-                    Current.Log.error(message)
-                    Current.clientEventStore.addEvent(.init(text: message, type: .locationUpdate))
-                    Current.notificationDispatcher.send(.init(
-                        id: .debug,
-                        title: "DEBUG: Failed to fire ZoneManager",
-                        body: message
-                    ))
-                }
-            }
+            sendZoneEvent(
+                api: api,
+                serverIdentifier: server.identifier.rawValue,
+                eventType: eventInfo.eventType,
+                eventData: eventInfo.eventData
+            )
         case .locationChange:
             break
         }
+    }
+
+    private func sendZoneEvent(
+        api: HomeAssistantAPI,
+        serverIdentifier: String,
+        eventType: String,
+        eventData: [String: Any],
+        queuedEventID: UUID? = nil
+    ) {
+        api.CreatePersistentEvent(eventType: eventType, eventData: eventData).pipe { [weak self] result in
+            DispatchQueue.main.async {
+                self?.handleZoneEventResult(
+                    result,
+                    serverIdentifier: serverIdentifier,
+                    eventType: eventType,
+                    eventData: eventData,
+                    queuedEventID: queuedEventID
+                )
+            }
+        }
+    }
+
+    private func handleZoneEventResult(
+        _ result: Result<Void>,
+        serverIdentifier: String,
+        eventType: String,
+        eventData: [String: Any],
+        queuedEventID: UUID?
+    ) {
+        if let queuedEventID {
+            drainingZoneEventIDs.remove(queuedEventID)
+        }
+
+        switch result {
+        case .fulfilled:
+            if let queuedEventID {
+                zoneEventOutbox.remove(id: queuedEventID)
+                flushPendingZoneEvents()
+            }
+            Current.Log.info("Fired ZoneManager event")
+        case let .rejected(error):
+            if queuedEventID == nil,
+               let pending = try? PendingZoneEvent(
+                   serverIdentifier: serverIdentifier,
+                   eventType: eventType,
+                   eventData: eventData
+               ) {
+                zoneEventOutbox.append(pending)
+            }
+
+            let message = "Failed to fire ZoneManager event; queued for retry: \(error.localizedDescription)"
+            Current.Log.error(message)
+            Current.clientEventStore.addEvent(.init(text: message, type: .locationUpdate))
+            Current.notificationDispatcher.send(.init(
+                id: .debug,
+                title: "DEBUG: Failed to fire ZoneManager",
+                body: message
+            ))
+        }
+    }
+
+    private func flushPendingZoneEvents() {
+        guard let pending = zoneEventOutbox.pendingEvents.first,
+              !drainingZoneEventIDs.contains(pending.id),
+              let eventData = pending.decodedEventData,
+              let server = Current.servers.server(
+                  forServerIdentifier: pending.serverIdentifier
+              ),
+              let api = Current.api(for: server) else { return }
+
+        drainingZoneEventIDs.insert(pending.id)
+        sendZoneEvent(
+            api: api,
+            serverIdentifier: pending.serverIdentifier,
+            eventType: pending.eventType,
+            eventData: eventData,
+            queuedEventID: pending.id
+        )
     }
 
     private func sync(zones: AnyCollection<AppZone>) {
