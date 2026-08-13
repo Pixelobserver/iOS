@@ -1,6 +1,37 @@
 import CoreLocation
 import PromiseKit
 import Shared
+import UIKit
+
+protocol BeaconScanBackgroundExecution: AnyObject {
+    func begin(expirationHandler: @escaping () -> Void)
+    func end()
+}
+
+final class UIApplicationBeaconScanBackgroundExecution: BeaconScanBackgroundExecution {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+
+    func begin(expirationHandler: @escaping () -> Void) {
+        guard UIApplication.shared.applicationState != .active,
+              identifier == .invalid else { return }
+
+        identifier = UIApplication.shared.beginBackgroundTask(
+            withName: "ZoneManagerBeaconScan",
+            expirationHandler: { [weak self] in
+                expirationHandler()
+                self?.end()
+            }
+        )
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+
+        let identifierToEnd = identifier
+        identifier = .invalid
+        UIApplication.shared.endBackgroundTask(identifierToEnd)
+    }
+}
 
 protocol ZoneManagerCollectorDelegate: AnyObject {
     func collector(_ collector: ZoneManagerCollector, didLog state: ZoneManagerState)
@@ -50,14 +81,18 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
     private let beaconExitMinimumEmptySamples: Int
     private let beaconRangingRetryLimit: Int
     private let beaconRangingRetryDelay: TimeInterval
+    private let backgroundExecution: BeaconScanBackgroundExecution
 
     init(
-        beaconVerificationTimeout: TimeInterval = 10,
-        opportunisticBeaconScanDuration: TimeInterval = 10,
+        // A location/region wake can happen while the beacon is still far away.
+        // Keep ranging through the short approach instead of losing the only wake after ten seconds.
+        beaconVerificationTimeout: TimeInterval = 25,
+        opportunisticBeaconScanDuration: TimeInterval = 25,
         beaconExitReconciliationDuration: TimeInterval = 8,
         beaconExitMinimumEmptySamples: Int = 3,
         beaconRangingRetryLimit: Int = 2,
-        beaconRangingRetryDelay: TimeInterval = 1
+        beaconRangingRetryDelay: TimeInterval = 1,
+        backgroundExecution: BeaconScanBackgroundExecution = UIApplicationBeaconScanBackgroundExecution()
     ) {
         self.beaconVerificationTimeout = beaconVerificationTimeout
         self.opportunisticBeaconScanDuration = opportunisticBeaconScanDuration
@@ -65,6 +100,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         self.beaconExitMinimumEmptySamples = beaconExitMinimumEmptySamples
         self.beaconRangingRetryLimit = beaconRangingRetryLimit
         self.beaconRangingRetryDelay = beaconRangingRetryDelay
+        self.backgroundExecution = backgroundExecution
     }
 
     func ignoreNextState(for region: CLRegion) {
@@ -125,6 +161,8 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         guard !opportunisticBeaconEntries.isEmpty else { return }
 
+        beginBackgroundScanExecution(manager: manager)
+
         let timeout = DispatchWorkItem { [weak self, weak manager] in
             guard let self, let manager else { return }
             self.reconcileBeaconExits()
@@ -148,6 +186,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             beaconReconciliationStates.removeValue(forKey: identifier)
         }
         opportunisticBeaconEntries.removeAll()
+        endBackgroundScanExecutionIfIdle()
     }
 
     func locationManager(
@@ -295,6 +334,8 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             manager.stopRangingBeacons(satisfying: beaconConstraint)
         }
 
+        endBackgroundScanExecutionIfIdle()
+
         events.forEach { delegate?.collector(self, didCollect: $0) }
     }
 
@@ -333,6 +374,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             if !self.hasActiveRangingEntry(for: pending.constraint) {
                 manager?.stopRangingBeacons(satisfying: pending.constraint)
             }
+            self.endBackgroundScanExecutionIfIdle()
             self.delegate?.collector(
                 self,
                 didLog: .didIgnore(event, ZoneManagerIgnoreReason.beaconEntryNotVerified)
@@ -344,6 +386,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             constraint: constraint,
             timeout: timeout
         )
+        beginBackgroundScanExecution(manager: manager)
         manager.startRangingBeacons(satisfying: constraint)
         DispatchQueue.main.asyncAfter(deadline: .now() + beaconVerificationTimeout, execute: timeout)
     }
@@ -355,6 +398,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         if !hasActiveRangingEntry(for: pending.constraint) {
             manager.stopRangingBeacons(satisfying: pending.constraint)
         }
+        endBackgroundScanExecutionIfIdle()
     }
 
     private func cancelOpportunisticBeaconEntry(for region: CLBeaconRegion, manager: CLLocationManager) {
@@ -363,6 +407,27 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         if !hasActiveRangingEntry(for: entry.constraint) {
             manager.stopRangingBeacons(satisfying: entry.constraint)
         }
+        endBackgroundScanExecutionIfIdle()
+    }
+
+    private func beginBackgroundScanExecution(manager: CLLocationManager) {
+        // Ranging alone does not keep a suspended app executable. Acquire the lease before
+        // starting Core Location work so near samples can arrive during the bounded scan.
+        backgroundExecution.begin { [weak self, weak manager] in
+            guard let self, let manager else { return }
+
+            for pending in self.pendingBeaconEntries.values {
+                pending.timeout.cancel()
+                manager.stopRangingBeacons(satisfying: pending.constraint)
+            }
+            self.pendingBeaconEntries.removeAll()
+            self.stopOpportunisticBeaconScanning(manager: manager)
+        }
+    }
+
+    private func endBackgroundScanExecutionIfIdle() {
+        guard pendingBeaconEntries.isEmpty, opportunisticBeaconEntries.isEmpty else { return }
+        backgroundExecution.end()
     }
 
     private func reconcileEmptyBeaconSample(identifiers: [String]) {
