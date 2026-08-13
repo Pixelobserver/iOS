@@ -196,8 +196,7 @@ class ZoneManager {
                 return
             }
             let eventInfo = api.zoneStateEvent(region: region, state: state, zone: zone)
-            sendZoneEvent(
-                api: api,
+            enqueueZoneEvent(
                 serverIdentifier: server.identifier.rawValue,
                 eventType: eventInfo.eventType,
                 eventData: eventInfo.eventData
@@ -207,21 +206,41 @@ class ZoneManager {
         }
     }
 
-    private func sendZoneEvent(
-        api: HomeAssistantAPI,
+    private func enqueueZoneEvent(
         serverIdentifier: String,
         eventType: String,
-        eventData: [String: Any],
-        queuedEventID: UUID? = nil
+        eventData: [String: Any]
     ) {
-        api.CreatePersistentEvent(eventType: eventType, eventData: eventData).pipe { [weak self] result in
+        do {
+            let pending = try PendingZoneEvent(
+                serverIdentifier: serverIdentifier,
+                eventType: eventType,
+                eventData: eventData
+            )
+            // Persist before any asynchronous URL resolution or URLSession task creation.
+            // iOS may suspend us at either boundary; the next wake can then resume delivery.
+            zoneEventOutbox.append(pending)
+            flushPendingZoneEvents()
+        } catch {
+            let message = "Failed to persist ZoneManager event before delivery: \(error.localizedDescription)"
+            Current.Log.error(message)
+            Current.clientEventStore.addEvent(.init(text: message, type: .locationUpdate))
+        }
+    }
+
+    private func sendZoneEvent(
+        api: HomeAssistantAPI,
+        pendingEvent: PendingZoneEvent,
+        eventData: [String: Any]
+    ) {
+        api.CreatePersistentEvent(
+            eventType: pendingEvent.eventType,
+            eventData: eventData
+        ).pipe { [weak self] result in
             DispatchQueue.main.async {
                 self?.handleZoneEventResult(
                     result,
-                    serverIdentifier: serverIdentifier,
-                    eventType: eventType,
-                    eventData: eventData,
-                    queuedEventID: queuedEventID
+                    pendingEvent: pendingEvent
                 )
             }
         }
@@ -229,32 +248,16 @@ class ZoneManager {
 
     private func handleZoneEventResult(
         _ result: Result<Void>,
-        serverIdentifier: String,
-        eventType: String,
-        eventData: [String: Any],
-        queuedEventID: UUID?
+        pendingEvent: PendingZoneEvent
     ) {
-        if let queuedEventID {
-            drainingZoneEventIDs.remove(queuedEventID)
-        }
+        drainingZoneEventIDs.remove(pendingEvent.id)
 
         switch result {
         case .fulfilled:
-            if let queuedEventID {
-                zoneEventOutbox.remove(id: queuedEventID)
-                flushPendingZoneEvents()
-            }
+            zoneEventOutbox.remove(id: pendingEvent.id)
+            flushPendingZoneEvents()
             Current.Log.info("Fired ZoneManager event")
         case let .rejected(error):
-            if queuedEventID == nil,
-               let pending = try? PendingZoneEvent(
-                   serverIdentifier: serverIdentifier,
-                   eventType: eventType,
-                   eventData: eventData
-               ) {
-                zoneEventOutbox.append(pending)
-            }
-
             let message = "Failed to fire ZoneManager event; queued for retry: \(error.localizedDescription)"
             Current.Log.error(message)
             Current.clientEventStore.addEvent(.init(text: message, type: .locationUpdate))
@@ -278,10 +281,8 @@ class ZoneManager {
         drainingZoneEventIDs.insert(pending.id)
         sendZoneEvent(
             api: api,
-            serverIdentifier: pending.serverIdentifier,
-            eventType: pending.eventType,
-            eventData: eventData,
-            queuedEventID: pending.id
+            pendingEvent: pending,
+            eventData: eventData
         )
     }
 

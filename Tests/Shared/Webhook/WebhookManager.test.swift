@@ -811,6 +811,27 @@ class WebhookManagerTests: XCTestCase {
         wait(for: [networkExpectation], timeout: 10.0)
     }
 
+    func testSendPersistedBackgroundStartsExecutionProtectionSynchronously() throws {
+        let previousBackgroundTask = Current.backgroundTask
+        let backgroundTask = RecordingBackgroundTaskRunner()
+        Current.backgroundTask = backgroundTask
+        defer { Current.backgroundTask = previousBackgroundTask }
+
+        let request = WebhookRequest(type: "webhook_name", data: ["json": true])
+        stub(condition: { [webhookURL1] req in req.url == webhookURL1 }, response: { _ in
+            HTTPStubsResponse(jsonObject: ["result": true], statusCode: 200, headers: nil)
+        })
+
+        let promise = manager.sendPersistedBackground(
+            identifier: .unhandled,
+            server: api1.server,
+            request: request
+        )
+
+        XCTAssertEqual(backgroundTask.names.first, BackgroundTask.webhookSend.rawValue)
+        XCTAssertNoThrow(try hang(promise))
+    }
+
     func testSendPersistentProtectionSpace() throws {
         // we want to fail through both regular & background, when failing
         Current.isBackgroundRequestsImmediate = { false }
@@ -928,6 +949,18 @@ private func XCTAssertEqualWebhookRequest(
 }
 
 private class FakeHassAPI: HomeAssistantAPI {}
+
+private final class RecordingBackgroundTaskRunner: HomeAssistantBackgroundTaskRunner {
+    private(set) var names = [String]()
+
+    func callAsFunction<PromiseValue>(
+        withName name: String,
+        wrapping: (TimeInterval?) -> Promise<PromiseValue>
+    ) -> Promise<PromiseValue> {
+        names.append(name)
+        return wrapping(nil)
+    }
+}
 
 class ReplacingTestHandler: WebhookResponseHandler {
     static var returnedResult: WebhookResponseHandlerResult?

@@ -481,6 +481,83 @@ class ZoneManagerTests: XCTestCase {
         wait(for: [drained], timeout: 1)
     }
 
+    func testZoneEventIsPersistedBeforeBackgroundDeliveryCompletes() throws {
+        let outbox = FakeZoneEventOutbox()
+        let manager = newZoneManager(zoneEventOutbox: outbox)
+        let api = apis[1]
+        let region = CLCircularRegion(
+            center: .init(latitude: 42.4242, longitude: 43.4343),
+            radius: 456,
+            identifier: "dogs"
+        )
+        let zone = try addedZones([
+            AppZone(
+                entityId: "zone.zid",
+                serverIdentifier: api.server.identifier.rawValue,
+                latitude: 42.2222,
+                longitude: 43.3333,
+                radius: 100,
+                trackingEnabled: true
+            ),
+        ])[0]
+        processor.promiseToReturn = .value(())
+        let (delivery, deliverySeal) = Promise<Void>.pending()
+        api.persistentEventResult = delivery
+
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .inside),
+            associatedZone: zone
+        ))
+
+        XCTAssertEqual(outbox.pendingEvents.count, 1)
+        XCTAssertEqual(outbox.pendingEvents.first?.eventType, "ios.zone_entered")
+
+        deliverySeal.fulfill(())
+        let drained = expectation(for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }))
+        wait(for: [drained], timeout: 1)
+    }
+
+    func testQueuedZoneEventsRemainOrderedUntilEachDeliverySucceeds() throws {
+        let outbox = FakeZoneEventOutbox()
+        let manager = newZoneManager(zoneEventOutbox: outbox)
+        let api = apis[1]
+        let region = CLCircularRegion(
+            center: .init(latitude: 42.4242, longitude: 43.4343),
+            radius: 456,
+            identifier: "dogs"
+        )
+        let zone = try addedZones([
+            AppZone(
+                entityId: "zone.zid",
+                serverIdentifier: api.server.identifier.rawValue,
+                latitude: 42.2222,
+                longitude: 43.3333,
+                radius: 100,
+                trackingEnabled: true
+            ),
+        ])[0]
+        processor.promiseToReturn = .value(())
+        let (firstDelivery, firstDeliverySeal) = Promise<Void>.pending()
+        api.persistentEventResult = firstDelivery
+
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .inside),
+            associatedZone: zone
+        ))
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .outside),
+            associatedZone: zone
+        ))
+
+        XCTAssertEqual(outbox.pendingEvents.map(\.eventType), ["ios.zone_entered", "ios.zone_exited"])
+        XCTAssertEqual(api.createdEvents.map(\.eventType), ["ios.zone_entered"])
+
+        firstDeliverySeal.fulfill(())
+        let drained = expectation(for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }))
+        wait(for: [drained], timeout: 1)
+        XCTAssertEqual(api.createdEvents.map(\.eventType), ["ios.zone_entered", "ios.zone_exited"])
+    }
+
     func testCollectorCollectsMultipleRegionZoneAndEventFires() throws {
         let manager = newZoneManager()
         let api = apis[1]
@@ -670,6 +747,7 @@ private class FakeHassAPI: HomeAssistantAPI {
     var createdEventSeal: Resolver<CreatedEventInfo>?
     var ephemeralEventCount = 0
     var persistentEventResult: Promise<Void> = .value(())
+    var createdEvents = [CreatedEventInfo]()
 
     override func CreateEvent(eventType: String, eventData: [String: Any]) -> Promise<Void> {
         ephemeralEventCount += 1
@@ -677,6 +755,7 @@ private class FakeHassAPI: HomeAssistantAPI {
     }
 
     override func CreatePersistentEvent(eventType: String, eventData: [String: Any]) -> Promise<Void> {
+        createdEvents.append((eventType: eventType, eventData: eventData))
         createdEventSeal?.fulfill((eventType: eventType, eventData: eventData))
         return persistentEventResult
     }

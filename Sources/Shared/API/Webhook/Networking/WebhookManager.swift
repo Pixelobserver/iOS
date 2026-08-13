@@ -385,6 +385,12 @@ public class WebhookManager: NSObject {
     ) -> Promise<Void> {
         let (promise, seal) = Promise<Void>.pending()
 
+        // Protect the queue hop itself. Without this synchronous assertion iOS can
+        // suspend the process after the caller returns but before `send(on:)` creates
+        // the persisted URLSession task. Expiration must not reject `promise`: the
+        // background URLSession may still finish it after a later system relaunch.
+        Current.backgroundTask(withName: BackgroundTask.webhookSend.rawValue) { _ in promise }.cauterize()
+
         dataQueue.async { [self] in
             send(
                 on: currentBackgroundSessionInfo,
