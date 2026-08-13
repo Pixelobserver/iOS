@@ -228,15 +228,28 @@ class ZoneManager {
         }
     }
 
-    private func sendZoneEvent(
+    private func startZoneEvent(
         api: HomeAssistantAPI,
         pendingEvent: PendingZoneEvent,
         eventData: [String: Any]
-    ) {
-        api.CreatePersistentEvent(
+    ) -> Bool {
+        let startResult = api.StartPersistentEvent(
             eventType: pendingEvent.eventType,
             eventData: eventData
-        ).pipe { [weak self] result in
+        )
+
+        guard case let .success(delivery) = startResult else {
+            if case let .failure(error) = startResult {
+                let message = "Failed to start ZoneManager background upload; queued for retry: " +
+                    error.localizedDescription
+                Current.Log.error(message)
+                Current.clientEventStore.addEvent(.init(text: message, type: .locationUpdate))
+            }
+            return false
+        }
+
+        drainingZoneEventIDs.insert(pendingEvent.id)
+        delivery.pipe { [weak self] result in
             DispatchQueue.main.async {
                 self?.handleZoneEventResult(
                     result,
@@ -244,6 +257,7 @@ class ZoneManager {
                 )
             }
         }
+        return true
     }
 
     private func handleZoneEventResult(
@@ -278,8 +292,7 @@ class ZoneManager {
               ),
               let api = Current.api(for: server) else { return }
 
-        drainingZoneEventIDs.insert(pending.id)
-        sendZoneEvent(
+        _ = startZoneEvent(
             api: api,
             pendingEvent: pending,
             eventData: eventData

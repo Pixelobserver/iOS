@@ -832,6 +832,37 @@ class WebhookManagerTests: XCTestCase {
         XCTAssertNoThrow(try hang(promise))
     }
 
+    func testStartPersistedBackgroundCreatesUploadTaskBeforeReturning() throws {
+        let request = WebhookRequest(type: "webhook_name", data: ["json": true])
+        let networkSemaphore = DispatchSemaphore(value: 0)
+        stub(condition: { [webhookURL1] req in req.url == webhookURL1 }, response: { _ in
+            networkSemaphore.wait()
+            return HTTPStubsResponse(jsonObject: ["result": true], statusCode: 200, headers: nil)
+        })
+
+        let result = manager.startPersistedBackground(
+            identifier: .unhandled,
+            server: api1.server,
+            request: request
+        )
+        guard case let .success(promise) = result else {
+            return XCTFail("Expected a background upload task to start synchronously")
+        }
+
+        let taskCreated = expectation(description: "background upload task exists")
+        manager.currentBackgroundSessionInfo.session.getAllTasks { tasks in
+            XCTAssertEqual(tasks.count, 1)
+            XCTAssertNotNil(tasks.first as? URLSessionUploadTask)
+            XCTAssertEqual(tasks.first?.state, .running)
+            XCTAssertEqual(tasks.first?.webhookPersisted?.request.type, "webhook_name")
+            taskCreated.fulfill()
+        }
+        wait(for: [taskCreated], timeout: 1)
+
+        networkSemaphore.signal()
+        XCTAssertNoThrow(try hang(promise))
+    }
+
     func testSendPersistentProtectionSpace() throws {
         // we want to fail through both regular & background, when failing
         Current.isBackgroundRequestsImmediate = { false }

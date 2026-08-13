@@ -39,4 +39,22 @@ final class HAAPIPersistentEventTests: XCTestCase {
         XCTAssertEqual(webhookManager.sendPersistedBackgroundCount, 1)
         XCTAssertEqual(webhookManager.sendCount, 0)
     }
+
+    func testImmediatePersistentEventStartsBackgroundTaskDirectly() {
+        webhookManager.sendRequestHandler = { _, _, _, seal in seal.fulfill(()) }
+        let api = HomeAssistantAPI(server: .fake())
+
+        let result = api.StartPersistentEvent(
+            eventType: "ios.zone_entered",
+            eventData: ["zone": "zone.postfach"]
+        )
+
+        guard case let .success(promise) = result else {
+            return XCTFail("Expected the persisted upload task to start")
+        }
+        XCTAssertNoThrow(try hang(promise))
+        XCTAssertEqual(webhookManager.startPersistedBackgroundCount, 1)
+        XCTAssertEqual(webhookManager.sendPersistedBackgroundCount, 0)
+        XCTAssertEqual(webhookManager.sendCount, 0)
+    }
 }

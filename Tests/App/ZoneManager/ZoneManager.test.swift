@@ -481,6 +481,44 @@ class ZoneManagerTests: XCTestCase {
         wait(for: [drained], timeout: 1)
     }
 
+    func testZoneEventStartFailureRemainsImmediatelyRetryableOnNextWake() throws {
+        let outbox = FakeZoneEventOutbox()
+        let manager = newZoneManager(zoneEventOutbox: outbox)
+        let api = apis[1]
+        let region = CLCircularRegion(
+            center: .init(latitude: 42.4242, longitude: 43.4343),
+            radius: 456,
+            identifier: "dogs"
+        )
+        let zone = try addedZones([
+            AppZone(
+                entityId: "zone.zid",
+                serverIdentifier: api.server.identifier.rawValue,
+                latitude: 42.2222,
+                longitude: 43.3333,
+                radius: 100,
+                trackingEnabled: true
+            ),
+        ])[0]
+        processor.promiseToReturn = .value(())
+        api.persistentEventStartResult = .failure(TestError.anyError)
+
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .inside),
+            associatedZone: zone
+        ))
+
+        XCTAssertEqual(outbox.pendingEvents.count, 1)
+        XCTAssertEqual(api.createdEvents.map(\.eventType), ["ios.zone_entered"])
+
+        api.persistentEventStartResult = .success(.value(()))
+        manager.applicationDidBecomeActive()
+
+        let drained = expectation(for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }))
+        wait(for: [drained], timeout: 1)
+        XCTAssertEqual(api.createdEvents.map(\.eventType), ["ios.zone_entered", "ios.zone_entered"])
+    }
+
     func testZoneEventIsPersistedBeforeBackgroundDeliveryCompletes() throws {
         let outbox = FakeZoneEventOutbox()
         let manager = newZoneManager(zoneEventOutbox: outbox)
@@ -747,6 +785,7 @@ private class FakeHassAPI: HomeAssistantAPI {
     var createdEventSeal: Resolver<CreatedEventInfo>?
     var ephemeralEventCount = 0
     var persistentEventResult: Promise<Void> = .value(())
+    var persistentEventStartResult: Result<Promise<Void>, Error>?
     var createdEvents = [CreatedEventInfo]()
 
     override func CreateEvent(eventType: String, eventData: [String: Any]) -> Promise<Void> {
@@ -758,5 +797,14 @@ private class FakeHassAPI: HomeAssistantAPI {
         createdEvents.append((eventType: eventType, eventData: eventData))
         createdEventSeal?.fulfill((eventType: eventType, eventData: eventData))
         return persistentEventResult
+    }
+
+    override func StartPersistentEvent(
+        eventType: String,
+        eventData: [String: Any]
+    ) -> Result<Promise<Void>, Error> {
+        createdEvents.append((eventType: eventType, eventData: eventData))
+        createdEventSeal?.fulfill((eventType: eventType, eventData: eventData))
+        return persistentEventStartResult ?? .success(persistentEventResult)
     }
 }
