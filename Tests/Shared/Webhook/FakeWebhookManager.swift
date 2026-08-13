@@ -34,7 +34,7 @@ class FakeWebhookManager: WebhookManager {
         identifier: WebhookResponseIdentifier = .unhandled,
         server: Server,
         request: WebhookRequest
-    ) -> Result<Promise<Void>, Error> {
+    ) -> Swift.Result<Promise<Void>, Error> {
         startPersistedBackgroundCount += 1
         let (promise, seal) = Promise<Void>.pending()
         sendRequestHandler?(identifier, server, request, seal)

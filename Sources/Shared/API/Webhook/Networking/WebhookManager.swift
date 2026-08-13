@@ -415,7 +415,7 @@ public class WebhookManager: NSObject {
         identifier: WebhookResponseIdentifier = .unhandled,
         server: Server,
         request: WebhookRequest
-    ) -> Result<Promise<Void>, Error> {
+    ) -> Swift.Result<Promise<Void>, Error> {
         let start = { [self] () throws -> Promise<Void> in
             guard let handlerType = responseHandlers[identifier] else {
                 throw WebhookError.unregisteredIdentifier(handler: identifier.rawValue)
@@ -459,10 +459,10 @@ public class WebhookManager: NSObject {
         }
 
         if DispatchQueue.getSpecific(key: dataQueueSpecificKey) == true {
-            return Result(catching: start)
+            return Swift.Result(catching: start)
         } else {
             return dataQueue.sync {
-                Result(catching: start)
+                Swift.Result(catching: start)
             }
         }
     }

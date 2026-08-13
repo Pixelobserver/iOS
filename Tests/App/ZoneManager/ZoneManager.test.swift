@@ -785,7 +785,7 @@ private class FakeHassAPI: HomeAssistantAPI {
     var createdEventSeal: Resolver<CreatedEventInfo>?
     var ephemeralEventCount = 0
     var persistentEventResult: Promise<Void> = .value(())
-    var persistentEventStartResult: Result<Promise<Void>, Error>?
+    var persistentEventStartResult: Swift.Result<Promise<Void>, Error>?
     var createdEvents = [CreatedEventInfo]()
 
     override func CreateEvent(eventType: String, eventData: [String: Any]) -> Promise<Void> {
@@ -802,7 +802,7 @@ private class FakeHassAPI: HomeAssistantAPI {
     override func StartPersistentEvent(
         eventType: String,
         eventData: [String: Any]
-    ) -> Result<Promise<Void>, Error> {
+    ) -> Swift.Result<Promise<Void>, Error> {
         createdEvents.append((eventType: eventType, eventData: eventData))
         createdEventSeal?.fulfill((eventType: eventType, eventData: eventData))
         return persistentEventStartResult ?? .success(persistentEventResult)

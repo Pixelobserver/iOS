@@ -403,7 +403,7 @@ public class HomeAssistantAPI {
     public func StartPersistentEvent(
         eventType: String,
         eventData: [String: Any]
-    ) -> Result<Promise<Void>, Error> {
+    ) -> Swift.Result<Promise<Void>, Error> {
         Current.webhooks.startPersistedBackground(
             server: server,
             request: .init(type: "fire_event", data: [
