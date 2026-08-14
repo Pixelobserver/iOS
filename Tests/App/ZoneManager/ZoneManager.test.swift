@@ -477,14 +477,20 @@ class ZoneManagerTests: XCTestCase {
             associatedZone: zone
         ))
 
-        let queued = expectation(for: NSPredicate(block: { _, _ in outbox.pendingEvents.count == 1 }))
+        let queued = expectation(
+            for: NSPredicate(block: { _, _ in outbox.pendingEvents.count == 1 }),
+            evaluatedWith: nil
+        )
         wait(for: [queued], timeout: 1)
         XCTAssertEqual(outbox.pendingEvents.first?.eventType, "ios.zone_entered")
 
         api.persistentEventResult = .value(())
         manager.applicationDidBecomeActive()
 
-        let drained = expectation(for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }))
+        let drained = expectation(
+            for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }),
+            evaluatedWith: nil
+        )
         wait(for: [drained], timeout: 1)
     }
 
@@ -521,7 +527,10 @@ class ZoneManagerTests: XCTestCase {
         api.persistentEventStartResult = .success(.value(()))
         manager.applicationDidBecomeActive()
 
-        let drained = expectation(for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }))
+        let drained = expectation(
+            for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }),
+            evaluatedWith: nil
+        )
         wait(for: [drained], timeout: 1)
         XCTAssertEqual(api.createdEvents.map(\.eventType), ["ios.zone_entered", "ios.zone_entered"])
     }
@@ -558,7 +567,10 @@ class ZoneManagerTests: XCTestCase {
         XCTAssertEqual(outbox.pendingEvents.first?.eventType, "ios.zone_entered")
 
         deliverySeal.fulfill(())
-        let drained = expectation(for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }))
+        let drained = expectation(
+            for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }),
+            evaluatedWith: nil
+        )
         wait(for: [drained], timeout: 1)
     }
 
@@ -598,7 +610,10 @@ class ZoneManagerTests: XCTestCase {
         XCTAssertEqual(api.createdEvents.map(\.eventType), ["ios.zone_entered"])
 
         firstDeliverySeal.fulfill(())
-        let drained = expectation(for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }))
+        let drained = expectation(
+            for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }),
+            evaluatedWith: nil
+        )
         wait(for: [drained], timeout: 1)
         XCTAssertEqual(api.createdEvents.map(\.eventType), ["ios.zone_entered", "ios.zone_exited"])
     }
