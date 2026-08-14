@@ -55,7 +55,12 @@ class AppZoneTests: XCTestCase {
         zone.beaconUUID = UUID().uuidString
 
         XCTAssertTrue(zone.isBeaconRegion)
-        XCTAssertEqualRegions(zone.regionsForMonitoring, zone.beaconRegion.flatMap { [$0] } ?? [])
+        XCTAssertEqualRegions(
+            zone.regionsForMonitoring,
+            zone.beaconRegion.map { [$0, zone.beaconApproachRegion] } ?? []
+        )
+        XCTAssertEqual(zone.beaconApproachRegion.radius, 200)
+        XCTAssertTrue(zone.beaconApproachRegion.identifier.hasSuffix(AppZone.beaconApproachRegionSuffix))
     }
 
     func testNormalRegion() {

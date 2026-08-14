@@ -71,6 +71,7 @@ class ZoneManager {
     }
 
     @objc func applicationDidBecomeActive() {
+        collector.stopBackgroundBeaconMonitoring(manager: locationManager)
         guard Current.settingsStore.locationSources.zone else { return }
 
         flushPendingZoneEvents()
@@ -83,6 +84,11 @@ class ZoneManager {
 
     @objc func applicationWillResignActive() {
         collector.stopForegroundBeaconScanning(manager: locationManager)
+        guard Current.settingsStore.locationSources.zone else { return }
+        collector.startBackgroundBeaconMonitoring(
+            in: locationManager.monitoredRegions,
+            manager: locationManager
+        )
     }
 
     private func updateLocationManager(isInitial: Bool) {
@@ -341,7 +347,9 @@ class ZoneManager {
                 ]
             ))
 
-            collector.ignoreNextState(for: region)
+            if !region.identifier.hasSuffix(AppZone.beaconApproachRegionSuffix) {
+                collector.ignoreNextState(for: region)
+            }
             locationManager.startMonitoring(for: region)
         }
 
@@ -360,6 +368,17 @@ class ZoneManager {
                 "ended \(needsRemoval.count)",
             ]
             return info.joined(separator: ", ")
+        }
+
+        if UIApplication.shared.applicationState != .active {
+            if locationManager.monitoredRegions.contains(where: { $0 is CLBeaconRegion }) {
+                collector.startBackgroundBeaconMonitoring(
+                    in: locationManager.monitoredRegions,
+                    manager: locationManager
+                )
+            } else {
+                collector.stopBackgroundBeaconMonitoring(manager: locationManager)
+            }
         }
     }
 }

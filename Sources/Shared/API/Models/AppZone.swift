@@ -109,7 +109,7 @@ public struct AppZone: Codable, FetchableRecord, PersistableRecord, Hashable, Id
     public var regionsForMonitoring: [CLRegion] {
         #if os(iOS)
         if let beaconRegion {
-            return [beaconRegion]
+            return [beaconRegion, beaconApproachRegion]
         } else {
             return circularRegionsForMonitoring
         }
@@ -126,6 +126,20 @@ public struct AppZone: Codable, FetchableRecord, PersistableRecord, Hashable, Id
     }
 
     #if os(iOS)
+    public static let beaconApproachRegionSuffix = "@beacon-approach"
+    private static let beaconApproachRadius: CLLocationDistance = 200
+
+    public var beaconApproachRegion: CLCircularRegion {
+        let region = CLCircularRegion(
+            center: center,
+            radius: max(radius, Self.beaconApproachRadius),
+            identifier: identifier + Self.beaconApproachRegionSuffix
+        )
+        region.notifyOnEntry = true
+        region.notifyOnExit = true
+        return region
+    }
+
     public var beaconRegion: CLBeaconRegion? {
         guard let uuidString = beaconUUID else {
             return nil

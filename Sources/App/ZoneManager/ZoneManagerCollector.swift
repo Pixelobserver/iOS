@@ -43,6 +43,8 @@ protocol ZoneManagerCollector: CLLocationManagerDelegate {
     func ignoreNextState(for region: CLRegion)
     func startForegroundBeaconScanning(in regions: Set<CLRegion>, manager: CLLocationManager)
     func stopForegroundBeaconScanning(manager: CLLocationManager)
+    func startBackgroundBeaconMonitoring(in regions: Set<CLRegion>, manager: CLLocationManager)
+    func stopBackgroundBeaconMonitoring(manager: CLLocationManager)
     func startOpportunisticBeaconScanning(in regions: Set<CLRegion>, manager: CLLocationManager)
 }
 
@@ -71,12 +73,22 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
     private var foregroundBeaconEntries = [String: ForegroundBeaconEntry]()
     private var foregroundBeaconIdentifiersInside = Set<String>()
     private var opportunisticBeaconEntries = [String: ForegroundBeaconEntry]()
+    private var approachBeaconEntries = [String: ForegroundBeaconEntry]()
+    private var approachBeaconScanTimeout: DispatchWorkItem?
+    private var startedApproachLocationUpdates = false
+    private var backgroundBeaconMonitoringActive = false
+    private var approachPreviousLocationConfiguration: (
+        desiredAccuracy: CLLocationAccuracy,
+        distanceFilter: CLLocationDistance,
+        activityType: CLActivityType
+    )?
     private var beaconReconciliationStates = [String: BeaconReconciliationState]()
     private var beaconRangingRetryCounts = [CLBeaconIdentityConstraint: Int]()
     private var beaconRangingRetryWorkItems = [CLBeaconIdentityConstraint: DispatchWorkItem]()
     private var opportunisticBeaconScanTimeout: DispatchWorkItem?
     private let beaconVerificationTimeout: TimeInterval
     private let opportunisticBeaconScanDuration: TimeInterval
+    private let approachBeaconScanDuration: TimeInterval
     private let beaconExitReconciliationDuration: TimeInterval
     private let beaconExitMinimumEmptySamples: Int
     private let beaconRangingRetryLimit: Int
@@ -88,6 +100,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         // Keep ranging through the short approach instead of losing the only wake after ten seconds.
         beaconVerificationTimeout: TimeInterval = 25,
         opportunisticBeaconScanDuration: TimeInterval = 25,
+        approachBeaconScanDuration: TimeInterval = 180,
         beaconExitReconciliationDuration: TimeInterval = 8,
         beaconExitMinimumEmptySamples: Int = 3,
         beaconRangingRetryLimit: Int = 2,
@@ -96,6 +109,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
     ) {
         self.beaconVerificationTimeout = beaconVerificationTimeout
         self.opportunisticBeaconScanDuration = opportunisticBeaconScanDuration
+        self.approachBeaconScanDuration = approachBeaconScanDuration
         self.beaconExitReconciliationDuration = beaconExitReconciliationDuration
         self.beaconExitMinimumEmptySamples = beaconExitMinimumEmptySamples
         self.beaconRangingRetryLimit = beaconRangingRetryLimit
@@ -126,6 +140,26 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         }
     }
 
+    func startBackgroundBeaconMonitoring(in regions: Set<CLRegion>, manager: CLLocationManager) {
+        guard regions.contains(where: { $0 is CLBeaconRegion }), !backgroundBeaconMonitoringActive else { return }
+
+        captureLocationConfigurationIfNeeded(manager: manager)
+        backgroundBeaconMonitoringActive = true
+        applyBackgroundIdleLocationConfiguration(manager: manager)
+        manager.startUpdatingLocation()
+        recordBeaconBackgroundEvent("Started low-power background beacon monitoring")
+    }
+
+    func stopBackgroundBeaconMonitoring(manager: CLLocationManager) {
+        guard backgroundBeaconMonitoringActive else { return }
+
+        stopAllApproachBeaconScans(manager: manager)
+        backgroundBeaconMonitoringActive = false
+        manager.stopUpdatingLocation()
+        restoreLocationConfiguration(manager: manager)
+        recordBeaconBackgroundEvent("Stopped low-power background beacon monitoring")
+    }
+
     func stopForegroundBeaconScanning(manager: CLLocationManager) {
         for (identifier, entry) in foregroundBeaconEntries
             where pendingBeaconEntries[identifier] == nil && opportunisticBeaconEntries[identifier] == nil {
@@ -140,7 +174,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
     func startOpportunisticBeaconScanning(in regions: Set<CLRegion>, manager: CLLocationManager) {
         // Foreground ranging is already continuous, so an additional timed scan
         // would only duplicate work.
-        guard foregroundBeaconEntries.isEmpty else { return }
+        guard foregroundBeaconEntries.isEmpty, approachBeaconEntries.isEmpty else { return }
 
         stopOpportunisticBeaconScanning(manager: manager)
 
@@ -237,6 +271,10 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         didStartMonitoringFor region: CLRegion
     ) {
         delegate?.collector(self, didLog: .didStartMonitoring(region))
+
+        if Self.isBeaconApproachRegion(region) {
+            manager.requestState(for: region)
+        }
     }
 
     func locationManager(
@@ -244,6 +282,11 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         didDetermineState state: CLRegionState,
         for region: CLRegion
     ) {
+        if Self.isBeaconApproachRegion(region) {
+            handleBeaconApproachState(state, region: region, manager: manager)
+            return
+        }
+
         guard !ignoredNextRegions.contains(region) else {
             ignoredNextRegions.remove(region)
             return
@@ -286,11 +329,23 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         let opportunisticIdentifiers = opportunisticBeaconEntries.compactMap {
             $0.value.constraint == beaconConstraint ? $0.key : nil
         }
-        let identifiers = Set(pendingIdentifiers + foregroundIdentifiers + opportunisticIdentifiers)
+        let approachIdentifiers = approachBeaconEntries.compactMap {
+            $0.value.constraint == beaconConstraint ? $0.key : nil
+        }
+        let identifiers = Set(
+            pendingIdentifiers + foregroundIdentifiers + opportunisticIdentifiers + approachIdentifiers
+        )
 
         guard beacons.contains(where: Self.isBeaconInsideRange) else {
             reconcileEmptyBeaconSample(identifiers: Array(identifiers))
             return
+        }
+
+        if !approachIdentifiers.isEmpty {
+            recordBeaconBackgroundEvent(
+                "Detected beacon during approach scan",
+                payload: ["regions": approachIdentifiers.sorted().joined(separator: ",")]
+            )
         }
 
         identifiers.forEach { beaconReconciliationStates.removeValue(forKey: $0) }
@@ -329,6 +384,15 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
                 beaconReconciliationStates.removeValue(forKey: opportunisticIdentifier)
             }
         }
+
+        for approachIdentifier in approachIdentifiers {
+            guard let approach = approachBeaconEntries.removeValue(forKey: approachIdentifier) else { continue }
+            if !events.contains(approach.event) {
+                events.append(approach.event)
+            }
+        }
+
+        stopApproachLocationUpdatesIfIdle(manager: manager)
 
         if !hasActiveRangingEntry(for: beaconConstraint) {
             manager.stopRangingBeacons(satisfying: beaconConstraint)
@@ -426,7 +490,9 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
     }
 
     private func endBackgroundScanExecutionIfIdle() {
-        guard pendingBeaconEntries.isEmpty, opportunisticBeaconEntries.isEmpty else { return }
+        guard pendingBeaconEntries.isEmpty, opportunisticBeaconEntries.isEmpty, approachBeaconEntries.isEmpty else {
+            return
+        }
         backgroundExecution.end()
     }
 
@@ -484,7 +550,136 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
     private func hasActiveRangingEntry(for constraint: CLBeaconIdentityConstraint) -> Bool {
         pendingBeaconEntries.values.contains { $0.constraint == constraint } ||
             foregroundBeaconEntries.values.contains { $0.constraint == constraint } ||
-            opportunisticBeaconEntries.values.contains { $0.constraint == constraint }
+            opportunisticBeaconEntries.values.contains { $0.constraint == constraint } ||
+            approachBeaconEntries.values.contains { $0.constraint == constraint }
+    }
+
+    private func handleBeaconApproachState(
+        _ state: CLRegionState,
+        region: CLRegion,
+        manager: CLLocationManager
+    ) {
+        let baseIdentifier = Self.baseIdentifier(forBeaconApproachRegion: region)
+
+        switch state {
+        case .inside:
+            guard approachBeaconEntries[baseIdentifier] == nil else { return }
+            guard let beaconRegion = manager.monitoredRegions.compactMap({ $0 as? CLBeaconRegion })
+                .first(where: { $0.identifier == baseIdentifier }) else { return }
+
+            let event = Self.event(for: beaconRegion, state: .inside)
+            guard event.associatedZone != nil else { return }
+
+            approachBeaconEntries[baseIdentifier] = ForegroundBeaconEntry(
+                event: event,
+                region: beaconRegion,
+                constraint: beaconRegion.beaconIdentityConstraint
+            )
+            beginBackgroundScanExecution(manager: manager)
+            captureLocationConfigurationIfNeeded(manager: manager)
+            manager.desiredAccuracy = kCLLocationAccuracyBest
+            manager.distanceFilter = 5
+            manager.activityType = .otherNavigation
+            manager.startUpdatingLocation()
+            startedApproachLocationUpdates = true
+            manager.startRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
+            scheduleApproachBeaconScanTimeout(manager: manager)
+            recordBeaconBackgroundEvent(
+                "Started high-accuracy beacon approach scan",
+                payload: ["region": baseIdentifier]
+            )
+        case .outside:
+            stopApproachBeaconScan(identifier: baseIdentifier, manager: manager)
+        case .unknown:
+            break
+        }
+    }
+
+    private func scheduleApproachBeaconScanTimeout(manager: CLLocationManager) {
+        approachBeaconScanTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self, weak manager] in
+            guard let self, let manager else { return }
+            self.recordBeaconBackgroundEvent("Beacon approach scan timed out")
+            self.stopAllApproachBeaconScans(manager: manager)
+        }
+        approachBeaconScanTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + approachBeaconScanDuration, execute: timeout)
+    }
+
+    private func stopApproachBeaconScan(identifier: String, manager: CLLocationManager) {
+        guard let entry = approachBeaconEntries.removeValue(forKey: identifier) else { return }
+        if !hasActiveRangingEntry(for: entry.constraint) {
+            manager.stopRangingBeacons(satisfying: entry.constraint)
+        }
+        stopApproachLocationUpdatesIfIdle(manager: manager)
+        endBackgroundScanExecutionIfIdle()
+    }
+
+    private func stopAllApproachBeaconScans(manager: CLLocationManager) {
+        approachBeaconScanTimeout?.cancel()
+        approachBeaconScanTimeout = nil
+        let entries = Array(approachBeaconEntries.values)
+        approachBeaconEntries.removeAll()
+        for entry in entries where !hasActiveRangingEntry(for: entry.constraint) {
+            manager.stopRangingBeacons(satisfying: entry.constraint)
+        }
+        stopApproachLocationUpdatesIfIdle(manager: manager)
+        endBackgroundScanExecutionIfIdle()
+    }
+
+    private func stopApproachLocationUpdatesIfIdle(manager: CLLocationManager) {
+        guard approachBeaconEntries.isEmpty else { return }
+        approachBeaconScanTimeout?.cancel()
+        approachBeaconScanTimeout = nil
+        if startedApproachLocationUpdates {
+            startedApproachLocationUpdates = false
+            if backgroundBeaconMonitoringActive {
+                applyBackgroundIdleLocationConfiguration(manager: manager)
+            } else {
+                manager.stopUpdatingLocation()
+                restoreLocationConfiguration(manager: manager)
+            }
+        }
+    }
+
+    private func captureLocationConfigurationIfNeeded(manager: CLLocationManager) {
+        guard approachPreviousLocationConfiguration == nil else { return }
+        approachPreviousLocationConfiguration = (
+            manager.desiredAccuracy,
+            manager.distanceFilter,
+            manager.activityType
+        )
+    }
+
+    private func applyBackgroundIdleLocationConfiguration(manager: CLLocationManager) {
+        manager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
+        manager.distanceFilter = 100
+        manager.activityType = .other
+    }
+
+    private func restoreLocationConfiguration(manager: CLLocationManager) {
+        if let previous = approachPreviousLocationConfiguration {
+            manager.desiredAccuracy = previous.desiredAccuracy
+            manager.distanceFilter = previous.distanceFilter
+            manager.activityType = previous.activityType
+        }
+        approachPreviousLocationConfiguration = nil
+    }
+
+    private func recordBeaconBackgroundEvent(_ text: String, payload: [String: String] = [:]) {
+        Current.clientEventStore.addEvent(ClientEvent(
+            text: text,
+            type: .locationUpdate,
+            payload: payload
+        ))
+    }
+
+    private static func isBeaconApproachRegion(_ region: CLRegion) -> Bool {
+        region is CLCircularRegion && region.identifier.hasSuffix(AppZone.beaconApproachRegionSuffix)
+    }
+
+    private static func baseIdentifier(forBeaconApproachRegion region: CLRegion) -> String {
+        String(region.identifier.dropLast(AppZone.beaconApproachRegionSuffix.count))
     }
 
     private static func event(for region: CLRegion, state: CLRegionState) -> ZoneManagerEvent {

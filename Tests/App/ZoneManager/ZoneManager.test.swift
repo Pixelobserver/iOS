@@ -125,6 +125,7 @@ class ZoneManagerTests: XCTestCase {
 
         manager.applicationWillResignActive()
         XCTAssertEqual(collector.stopScanningCount, 1)
+        XCTAssertEqual(collector.backgroundMonitoredRegions, locationManager.monitoredRegions)
     }
 
     private func addedZones(_ toAdd: [AppZone]) throws -> [AppZone] {
@@ -198,7 +199,10 @@ class ZoneManagerTests: XCTestCase {
         XCTAssertEqual(locationManager.monitoredRegions, currentRegions)
         XCTAssertEqual(locationManager.stopMonitoringRegions.hackilySorted(), removedRegions.hackilySorted())
         XCTAssertEqual(locationManager.startMonitoringRegions.hackilySorted(), addedRegions.hackilySorted())
-        XCTAssertEqual(collector.ignoringNextStates, Set(addedRegions))
+        XCTAssertEqual(
+            collector.ignoringNextStates,
+            Set(addedRegions.filter { !$0.identifier.hasSuffix(AppZone.beaconApproachRegionSuffix) })
+        )
 
         // remove a zone
         let toRemove = zones.popLast()!
@@ -214,7 +218,10 @@ class ZoneManagerTests: XCTestCase {
         XCTAssertEqual(locationManager.monitoredRegions, currentRegions)
         XCTAssertEqual(locationManager.stopMonitoringRegions.hackilySorted(), removedRegions.hackilySorted())
         XCTAssertEqual(locationManager.startMonitoringRegions.hackilySorted(), addedRegions.hackilySorted())
-        XCTAssertEqual(collector.ignoringNextStates, Set(addedRegions))
+        XCTAssertEqual(
+            collector.ignoringNextStates,
+            Set(addedRegions.filter { !$0.identifier.hasSuffix(AppZone.beaconApproachRegionSuffix) })
+        )
 
         withExtendedLifetime(manager) { /* silences unused variable */ }
     }
@@ -723,6 +730,8 @@ private class FakeCollector: NSObject, ZoneManagerCollector {
     weak var scanManager: CLLocationManager?
     var stopScanningCount = 0
     var opportunisticallyScannedRegions = Set<CLRegion>()
+    var backgroundMonitoredRegions = Set<CLRegion>()
+    var stopBackgroundMonitoringCount = 0
 
     func ignoreNextState(for region: CLRegion) {
         ignoringNextStates.insert(region)
@@ -735,6 +744,16 @@ private class FakeCollector: NSObject, ZoneManagerCollector {
 
     func stopForegroundBeaconScanning(manager: CLLocationManager) {
         stopScanningCount += 1
+        scanManager = manager
+    }
+
+    func startBackgroundBeaconMonitoring(in regions: Set<CLRegion>, manager: CLLocationManager) {
+        backgroundMonitoredRegions = regions
+        scanManager = manager
+    }
+
+    func stopBackgroundBeaconMonitoring(manager: CLLocationManager) {
+        stopBackgroundMonitoringCount += 1
         scanManager = manager
     }
 
