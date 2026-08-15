@@ -4,6 +4,7 @@ import GRDB
 import PromiseKit
 import Shared
 import UIKit
+import UserNotifications
 
 class ZoneManager {
     let locationManager: CLLocationManager
@@ -205,7 +206,8 @@ class ZoneManager {
             enqueueZoneEvent(
                 serverIdentifier: server.identifier.rawValue,
                 eventType: eventInfo.eventType,
-                eventData: eventInfo.eventData
+                eventData: eventInfo.eventData,
+                isBeacon: region is CLBeaconRegion
             )
         case .locationChange:
             break
@@ -215,13 +217,15 @@ class ZoneManager {
     private func enqueueZoneEvent(
         serverIdentifier: String,
         eventType: String,
-        eventData: [String: Any]
+        eventData: [String: Any],
+        isBeacon: Bool
     ) {
         do {
             let pending = try PendingZoneEvent(
                 serverIdentifier: serverIdentifier,
                 eventType: eventType,
-                eventData: eventData
+                eventData: eventData,
+                isBeacon: isBeacon
             )
             // Persist before any asynchronous URL resolution or URLSession task creation.
             // iOS may suspend us at either boundary; the next wake can then resume delivery.
@@ -231,6 +235,15 @@ class ZoneManager {
             let message = "Failed to persist ZoneManager event before delivery: \(error.localizedDescription)"
             Current.Log.error(message)
             Current.clientEventStore.addEvent(.init(text: message, type: .locationUpdate))
+            if isBeacon {
+                sendBeaconDeliveryNotification(
+                    id: .beaconEventQueued,
+                    title: "Beacon-Ereignis konnte nicht gespeichert werden",
+                    eventType: eventType,
+                    eventData: eventData,
+                    detail: error.localizedDescription
+                )
+            }
         }
     }
 
@@ -250,6 +263,15 @@ class ZoneManager {
                     error.localizedDescription
                 Current.Log.error(message)
                 Current.clientEventStore.addEvent(.init(text: message, type: .locationUpdate))
+                if pendingEvent.isBeacon == true {
+                    sendBeaconDeliveryNotification(
+                        id: .beaconEventQueued,
+                        title: "Beacon-Ereignis wartet auf Home Assistant",
+                        eventType: pendingEvent.eventType,
+                        eventData: eventData,
+                        detail: "Upload nicht gestartet – neuer Versuch folgt"
+                    )
+                }
             }
             return false
         }
@@ -277,10 +299,27 @@ class ZoneManager {
             zoneEventOutbox.remove(id: pendingEvent.id)
             flushPendingZoneEvents()
             Current.Log.info("Fired ZoneManager event")
+            if pendingEvent.isBeacon == true {
+                sendBeaconDeliveryNotification(
+                    id: .beaconEventDelivered,
+                    title: "Beacon-Ereignis an Home Assistant übertragen",
+                    eventType: pendingEvent.eventType,
+                    eventData: pendingEvent.decodedEventData ?? [:]
+                )
+            }
         case let .rejected(error):
             let message = "Failed to fire ZoneManager event; queued for retry: \(error.localizedDescription)"
             Current.Log.error(message)
             Current.clientEventStore.addEvent(.init(text: message, type: .locationUpdate))
+            if pendingEvent.isBeacon == true {
+                sendBeaconDeliveryNotification(
+                    id: .beaconEventQueued,
+                    title: "Beacon-Ereignis wartet auf Home Assistant",
+                    eventType: pendingEvent.eventType,
+                    eventData: pendingEvent.decodedEventData ?? [:],
+                    detail: "Übertragung fehlgeschlagen – neuer Versuch folgt"
+                )
+            }
             Current.notificationDispatcher.send(.init(
                 id: .debug,
                 title: "DEBUG: Failed to fire ZoneManager",
@@ -303,6 +342,65 @@ class ZoneManager {
             pendingEvent: pending,
             eventData: eventData
         )
+    }
+
+    private func sendLocalBeaconNotification(for event: ZoneManagerEvent) {
+        guard case let .region(region, state) = event.eventType,
+              region is CLBeaconRegion,
+              let zone = event.associatedZone else { return }
+
+        let notification: LocalNotificationDispatcher.Notification
+        switch state {
+        case .inside:
+            let diagnostic = event.beaconDiagnostic.map {
+                "\(beaconDiagnosticTimestamp()) · \($0.isAppActive ? "Vordergrund" : "Hintergrund") · " +
+                    "\($0.proximity) · RSSI \($0.rssi)"
+            } ?? "\(beaconDiagnosticTimestamp()) · lokale Erkennung"
+            notification = .init(
+                id: .beaconDetectedLocally,
+                title: "\(zone.name): Beacon lokal erkannt",
+                body: diagnostic,
+                sound: .default
+            )
+        case .outside:
+            let appState = UIApplication.shared.applicationState == .active ? "Vordergrund" : "Hintergrund"
+            notification = .init(
+                id: .beaconExitedLocally,
+                title: "\(zone.name): Beacon lokal verlassen",
+                body: "\(beaconDiagnosticTimestamp()) · \(appState) · lokal nicht mehr erkannt",
+                sound: .default
+            )
+        case .unknown:
+            return
+        }
+
+        Current.notificationDispatcher.send(notification)
+    }
+
+    private func beaconDiagnosticTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_AT")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: Date())
+    }
+
+    private func sendBeaconDeliveryNotification(
+        id: NotificationIdentifier,
+        title: String,
+        eventType: String,
+        eventData: [String: Any],
+        detail: String? = nil
+    ) {
+        guard eventType == "ios.zone_entered" || eventType == "ios.zone_exited",
+              let zone = eventData["zone"] as? String else { return }
+
+        let action = eventType == "ios.zone_entered" ? "Entry" : "Exit"
+        let body = ["\(action): \(zone)", detail].compactMap { $0 }.joined(separator: " · ")
+        Current.notificationDispatcher.send(.init(
+            id: id,
+            title: title,
+            body: body
+        ))
     }
 
     private func sync(zones: AnyCollection<AppZone>) {
@@ -389,6 +487,7 @@ extension ZoneManager: ZoneManagerCollectorDelegate {
     }
 
     func collector(_ collector: ZoneManagerCollector, didCollect event: ZoneManagerEvent) {
+        sendLocalBeaconNotification(for: event)
         fire(event: event)
         perform(event: event)
     }

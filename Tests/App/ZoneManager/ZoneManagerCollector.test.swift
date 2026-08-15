@@ -573,6 +573,8 @@ class ZoneManagerCollectorTests: XCTestCase {
         )
 
         XCTAssertEqual(delegate.events, [.init(eventType: .region(region, .inside))])
+        XCTAssertEqual(delegate.events.first?.beaconDiagnostic?.proximity, "near")
+        XCTAssertEqual(delegate.events.first?.beaconDiagnostic?.rssi, -60)
         XCTAssertEqual(locationManager.stoppedRangingConstraints, [region.beaconIdentityConstraint])
     }
 

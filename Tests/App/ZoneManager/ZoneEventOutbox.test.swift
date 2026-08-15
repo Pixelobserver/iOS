@@ -23,7 +23,8 @@ final class ZoneEventOutboxTests: XCTestCase {
         let event = try PendingZoneEvent(
             serverIdentifier: "server-id",
             eventType: "ios.zone_entered",
-            eventData: ["zone": "zone.postfach"]
+            eventData: ["zone": "zone.postfach"],
+            isBeacon: true
         )
         var outbox: UserDefaultsZoneEventOutbox? = UserDefaultsZoneEventOutbox(
             defaults: defaults,
@@ -34,6 +35,7 @@ final class ZoneEventOutboxTests: XCTestCase {
         outbox = UserDefaultsZoneEventOutbox(defaults: defaults, key: "outbox")
         XCTAssertEqual(outbox?.pendingEvents, [event])
         XCTAssertEqual(outbox?.pendingEvents.first?.decodedEventData?["zone"] as? String, "zone.postfach")
+        XCTAssertEqual(outbox?.pendingEvents.first?.isBeacon, true)
 
         outbox?.remove(id: event.id)
         XCTAssertTrue(outbox?.pendingEvents.isEmpty == true)

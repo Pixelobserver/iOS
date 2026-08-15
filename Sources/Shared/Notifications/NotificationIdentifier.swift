@@ -9,6 +9,12 @@ public enum NotificationIdentifier: String {
     case intentPressFailed
     case serverUnreachable
 
+    // Beacon diagnostics
+    case beaconDetectedLocally
+    case beaconExitedLocally
+    case beaconEventDelivered
+    case beaconEventQueued
+
     // Debug
     case debug
 }

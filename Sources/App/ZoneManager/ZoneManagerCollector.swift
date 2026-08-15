@@ -336,7 +336,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             pendingIdentifiers + foregroundIdentifiers + opportunisticIdentifiers + approachIdentifiers
         )
 
-        guard beacons.contains(where: Self.isBeaconInsideRange) else {
+        guard let detectedBeacon = beacons.first(where: Self.isBeaconInsideRange) else {
             reconcileEmptyBeaconSample(identifiers: Array(identifiers))
             return
         }
@@ -400,7 +400,16 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         endBackgroundScanExecutionIfIdle()
 
-        events.forEach { delegate?.collector(self, didCollect: $0) }
+        let diagnostic = ZoneManagerEvent.BeaconDiagnostic(
+            proximity: Self.diagnosticProximity(detectedBeacon.proximity),
+            rssi: detectedBeacon.rssi,
+            isAppActive: UIApplication.shared.applicationState == .active
+        )
+        events.forEach { event in
+            var event = event
+            event.beaconDiagnostic = diagnostic
+            delegate?.collector(self, didCollect: event)
+        }
     }
 
     func locationManager(
@@ -544,6 +553,21 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             return false
         @unknown default:
             return false
+        }
+    }
+
+    private static func diagnosticProximity(_ proximity: CLProximity) -> String {
+        switch proximity {
+        case .immediate:
+            return "immediate"
+        case .near:
+            return "near"
+        case .far:
+            return "far"
+        case .unknown:
+            return "unknown"
+        @unknown default:
+            return "unknown"
         }
     }
 

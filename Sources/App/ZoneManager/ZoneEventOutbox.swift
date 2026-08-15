@@ -7,19 +7,22 @@ struct PendingZoneEvent: Codable, Equatable {
     let eventType: String
     let eventData: Data
     let createdAt: Date
+    let isBeacon: Bool?
 
     init(
         id: UUID = UUID(),
         serverIdentifier: String,
         eventType: String,
         eventData: [String: Any],
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        isBeacon: Bool = false
     ) throws {
         self.id = id
         self.serverIdentifier = serverIdentifier
         self.eventType = eventType
         self.eventData = try JSONSerialization.data(withJSONObject: eventData, options: [.sortedKeys])
         self.createdAt = createdAt
+        self.isBeacon = isBeacon
     }
 
     var decodedEventData: [String: Any]? {

@@ -4,6 +4,7 @@ import GRDB
 @testable import HomeAssistant
 import PromiseKit
 @testable import Shared
+import UserNotifications
 import XCTest
 
 final class MockClientEventStore: ClientEventStoreProtocol {
@@ -29,6 +30,16 @@ final class MockClientEventStore: ClientEventStoreProtocol {
     }
 }
 
+private final class ZoneManagerNotificationDispatcher: LocalNotificationDispatcherProtocol {
+    var notifications = [LocalNotificationDispatcher.Notification]()
+
+    func send(_ notification: LocalNotificationDispatcher.Notification) {
+        notifications.append(notification)
+    }
+
+    func reschedule(_ content: UNNotificationContent, after delay: TimeInterval) {}
+}
+
 private final class FakeZoneEventOutbox: ZoneEventOutbox {
     var pendingEvents = [PendingZoneEvent]()
 
@@ -49,6 +60,8 @@ class ZoneManagerTests: XCTestCase {
     private var regionFilter: FakeRegionFilter!
     private var locationManager: FakeCLLocationManager!
     private var apis: [FakeHassAPI]!
+    private var previousNotificationDispatcher: LocalNotificationDispatcherProtocol!
+    private var notificationDispatcher: ZoneManagerNotificationDispatcher!
     private var loggedEventsUpdatedExpectation: XCTestExpectation?
     private var loggedEvents: [ClientEvent]! {
         didSet {
@@ -84,6 +97,9 @@ class ZoneManagerTests: XCTestCase {
             self.loggedEvents.append(event)
         })
         Current.location.oneShotLocation = { _, _ in .value(.init(latitude: 0, longitude: 0)) }
+        previousNotificationDispatcher = Current.notificationDispatcher
+        notificationDispatcher = ZoneManagerNotificationDispatcher()
+        Current.notificationDispatcher = notificationDispatcher
         collector = FakeCollector()
         processor = FakeProcessor()
         regionFilter = FakeRegionFilter()
@@ -93,6 +109,7 @@ class ZoneManagerTests: XCTestCase {
     override func tearDown() {
         Current.database = previousDatabase
         Current.clientEventStore.clearAllEvents()
+        Current.notificationDispatcher = previousNotificationDispatcher
 
         super.tearDown()
     }
@@ -448,6 +465,89 @@ class ZoneManagerTests: XCTestCase {
         let createdEvent2 = try hang(api.createdEventPromise)
         XCTAssertEqual(createdEvent2.eventType, "ios.zone_exited")
         XCTAssertEqual(createdEvent2.eventData["zone"] as? String, "zone.zid")
+    }
+
+    func testBeaconEntryAndExitNotifyLocallyBeforeDelivery() throws {
+        let manager = newZoneManager()
+        let api = apis[1]
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "postfach")
+        let zone = try addedZones([
+            AppZone(
+                entityId: "zone.postfach",
+                serverIdentifier: api.server.identifier.rawValue,
+                friendlyName: "Postfach",
+                trackingEnabled: true,
+                beaconUUID: region.uuid.uuidString
+            ),
+        ])[0]
+        processor.promiseToReturn = .value(())
+
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .inside),
+            associatedZone: zone
+        ))
+
+        XCTAssertEqual(notificationDispatcher.notifications.first?.id, .beaconDetectedLocally)
+        XCTAssertEqual(notificationDispatcher.notifications.first?.title, "Postfach: Beacon lokal erkannt")
+
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .outside),
+            associatedZone: zone
+        ))
+
+        XCTAssertTrue(notificationDispatcher.notifications.contains { $0.id == .beaconExitedLocally })
+    }
+
+    func testSuccessfulBeaconDeliveryNotifiesAfterConfirmation() throws {
+        let manager = newZoneManager()
+        let api = apis[1]
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "postfach")
+        let zone = try addedZones([
+            AppZone(
+                entityId: "zone.postfach",
+                serverIdentifier: api.server.identifier.rawValue,
+                friendlyName: "Postfach",
+                trackingEnabled: true,
+                beaconUUID: region.uuid.uuidString
+            ),
+        ])[0]
+        processor.promiseToReturn = .value(())
+
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .inside),
+            associatedZone: zone
+        ))
+
+        let delivered = expectation(for: NSPredicate(block: { _, _ in
+            self.notificationDispatcher.notifications.contains { $0.id == .beaconEventDelivered }
+        }), evaluatedWith: nil)
+        wait(for: [delivered], timeout: 1)
+    }
+
+    func testFailedBeaconUploadStartNotifiesThatEventIsQueued() throws {
+        let outbox = FakeZoneEventOutbox()
+        let manager = newZoneManager(zoneEventOutbox: outbox)
+        let api = apis[1]
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "postfach")
+        let zone = try addedZones([
+            AppZone(
+                entityId: "zone.postfach",
+                serverIdentifier: api.server.identifier.rawValue,
+                friendlyName: "Postfach",
+                trackingEnabled: true,
+                beaconUUID: region.uuid.uuidString
+            ),
+        ])[0]
+        processor.promiseToReturn = .value(())
+        api.persistentEventStartResult = .failure(TestError.anyError)
+
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .inside),
+            associatedZone: zone
+        ))
+
+        XCTAssertEqual(outbox.pendingEvents.count, 1)
+        XCTAssertTrue(notificationDispatcher.notifications.contains { $0.id == .beaconEventQueued })
     }
 
     func testFailedZoneEventIsQueuedAndRetriedWhenAppBecomesActive() throws {
