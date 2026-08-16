@@ -264,6 +264,54 @@ class ZoneManagerCollectorTests: XCTestCase {
         XCTAssertEqual(backgroundExecution.endCount, 1)
     }
 
+    func testBeaconExitRearmsApproachScanWhileStillInsideApproachRegion() throws {
+        let uuid = UUID()
+        let zone = AppZone(
+            entityId: "beacon_region",
+            serverIdentifier: "server1",
+            beaconUUID: uuid.uuidString
+        )
+        try database.write { db in
+            try zone.save(db)
+        }
+        let beaconRegion = try XCTUnwrap(zone.beaconRegion)
+        let approachRegion = zone.beaconApproachRegion
+        let beacon = CLBeacon(
+            uuid: uuid,
+            major: 0,
+            minor: 0,
+            proximity: .near,
+            accuracy: 1,
+            rssi: -55,
+            timestamp: Date()
+        )
+        locationManager.overrideMonitoredRegions = [beaconRegion, approachRegion]
+
+        collector.locationManager(locationManager, didDetermineState: .inside, for: approachRegion)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: beaconRegion.beaconIdentityConstraint
+        )
+        collector.locationManager(locationManager, didDetermineState: .outside, for: beaconRegion)
+
+        XCTAssertEqual(locationManager.requestedRegions, [approachRegion])
+
+        collector.locationManager(locationManager, didDetermineState: .inside, for: approachRegion)
+        collector.locationManager(
+            locationManager,
+            didRange: [beacon],
+            satisfying: beaconRegion.beaconIdentityConstraint
+        )
+
+        XCTAssertEqual(delegate.events, [
+            .init(eventType: .region(beaconRegion, .inside), associatedZone: zone),
+            .init(eventType: .region(beaconRegion, .outside), associatedZone: zone),
+            .init(eventType: .region(beaconRegion, .inside), associatedZone: zone),
+        ])
+        XCTAssertEqual(locationManager.startUpdatingLocationCount, 2)
+    }
+
     func testBeaconApproachScanTimesOutAndStopsLocationUpdates() throws {
         let uuid = UUID()
         let zone = AppZone(
@@ -1077,6 +1125,8 @@ class ZoneManagerCollectorTests: XCTestCase {
             try zone.save(db)
         }
         let region = CLBeaconRegion(uuid: UUID(), identifier: zone.identifier)
+        let approachRegion = zone.beaconApproachRegion
+        locationManager.overrideMonitoredRegions = [region, approachRegion]
         let exitExpectation = expectation(description: "reconciled beacon exit")
         collector = ZoneManagerCollectorImpl(
             opportunisticBeaconScanDuration: 0.02,
@@ -1099,6 +1149,7 @@ class ZoneManagerCollectorTests: XCTestCase {
         XCTAssertEqual(delegate.events, [
             .init(eventType: .region(region, .outside), associatedZone: zone),
         ])
+        XCTAssertEqual(locationManager.requestedRegions, [approachRegion])
         XCTAssertEqual(locationManager.stoppedRangingConstraints, [region.beaconIdentityConstraint])
     }
 

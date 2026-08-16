@@ -199,7 +199,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         let timeout = DispatchWorkItem { [weak self, weak manager] in
             guard let self, let manager else { return }
-            self.reconcileBeaconExits()
+            self.reconcileBeaconExits(manager: manager)
             self.stopOpportunisticBeaconScanning(manager: manager)
         }
         opportunisticBeaconScanTimeout = timeout
@@ -304,6 +304,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
                 cancelPendingBeaconEntry(for: beaconRegion, manager: manager)
                 cancelOpportunisticBeaconEntry(for: beaconRegion, manager: manager)
                 foregroundBeaconIdentifiersInside.remove(beaconRegion.identifier)
+                rearmBeaconApproachScan(afterExitFrom: beaconRegion, manager: manager)
             case .unknown:
                 break
             }
@@ -337,7 +338,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         )
 
         guard let detectedBeacon = beacons.first(where: Self.isBeaconInsideRange) else {
-            reconcileEmptyBeaconSample(identifiers: Array(identifiers))
+            reconcileEmptyBeaconSample(identifiers: Array(identifiers), manager: manager)
             return
         }
 
@@ -505,7 +506,7 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         backgroundExecution.end()
     }
 
-    private func reconcileEmptyBeaconSample(identifiers: [String]) {
+    private func reconcileEmptyBeaconSample(identifiers: [String], manager: CLLocationManager) {
         let now = Date()
 
         for identifier in Set(identifiers) where foregroundBeaconIdentifiersInside.contains(identifier) {
@@ -515,10 +516,10 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
             beaconReconciliationStates[identifier] = state
         }
 
-        reconcileBeaconExits(now: now)
+        reconcileBeaconExits(manager: manager, now: now)
     }
 
-    private func reconcileBeaconExits(now: Date = Date()) {
+    private func reconcileBeaconExits(manager: CLLocationManager, now: Date = Date()) {
         let identifiersToExit = beaconReconciliationStates.compactMap { identifier, state -> String? in
             guard state.emptySampleCount >= beaconExitMinimumEmptySamples,
                   let firstEmptySampleAt = state.firstEmptySampleAt,
@@ -540,7 +541,22 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
                 self,
                 didCollect: Self.event(for: entry.region, state: .outside)
             )
+            rearmBeaconApproachScan(afterExitFrom: entry.region, manager: manager)
         }
+    }
+
+    private func rearmBeaconApproachScan(afterExitFrom beaconRegion: CLBeaconRegion, manager: CLLocationManager) {
+        guard approachBeaconEntries[beaconRegion.identifier] == nil,
+              let approachRegion = manager.monitoredRegions.first(where: {
+                  Self.isBeaconApproachRegion($0) &&
+                      Self.baseIdentifier(forBeaconApproachRegion: $0) == beaconRegion.identifier
+              }) else { return }
+
+        manager.requestState(for: approachRegion)
+        recordBeaconBackgroundEvent(
+            "Requested beacon approach rearm after exit",
+            payload: ["region": beaconRegion.identifier]
+        )
     }
 
     private static func isBeaconInsideRange(_ beacon: CLBeacon) -> Bool {
