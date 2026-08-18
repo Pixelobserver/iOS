@@ -143,11 +143,9 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
     func startBackgroundBeaconMonitoring(in regions: Set<CLRegion>, manager: CLLocationManager) {
         guard regions.contains(where: { $0 is CLBeaconRegion }), !backgroundBeaconMonitoringActive else { return }
 
-        captureLocationConfigurationIfNeeded(manager: manager)
         backgroundBeaconMonitoringActive = true
-        applyBackgroundIdleLocationConfiguration(manager: manager)
-        manager.startUpdatingLocation()
-        recordBeaconBackgroundEvent("Started low-power background beacon monitoring")
+        startForegroundBeaconScanning(in: regions, manager: manager)
+        recordBeaconBackgroundEvent("Started continuous background beacon ranging without GPS")
     }
 
     func stopBackgroundBeaconMonitoring(manager: CLLocationManager) {
@@ -155,9 +153,8 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         stopAllApproachBeaconScans(manager: manager)
         backgroundBeaconMonitoringActive = false
-        manager.stopUpdatingLocation()
-        restoreLocationConfiguration(manager: manager)
-        recordBeaconBackgroundEvent("Stopped low-power background beacon monitoring")
+        stopForegroundBeaconScanning(manager: manager)
+        recordBeaconBackgroundEvent("Stopped continuous background beacon ranging without GPS")
     }
 
     func stopForegroundBeaconScanning(manager: CLLocationManager) {

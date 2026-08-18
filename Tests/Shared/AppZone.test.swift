@@ -57,7 +57,7 @@ class AppZoneTests: XCTestCase {
         XCTAssertTrue(zone.isBeaconRegion)
         XCTAssertEqualRegions(
             zone.regionsForMonitoring,
-            zone.beaconRegion.map { [$0, zone.beaconApproachRegion] } ?? []
+            zone.beaconRegion.map { [$0] } ?? []
         )
         XCTAssertEqual(zone.beaconApproachRegion.radius, 200)
         XCTAssertTrue(zone.beaconApproachRegion.identifier.hasSuffix(AppZone.beaconApproachRegionSuffix))

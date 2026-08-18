@@ -199,19 +199,17 @@ class ZoneManagerCollectorTests: XCTestCase {
         XCTAssertEqual(backgroundExecution.beginCount, 1)
     }
 
-    func testBackgroundBeaconMonitoringStartsLowPowerContinuousLocationUpdates() {
+    func testBackgroundBeaconMonitoringStartsContinuousRangingWithoutLocationUpdates() {
         let beaconRegion = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
 
         collector.startBackgroundBeaconMonitoring(in: [beaconRegion], manager: locationManager)
         collector.startBackgroundBeaconMonitoring(in: [beaconRegion], manager: locationManager)
 
-        XCTAssertEqual(locationManager.startUpdatingLocationCount, 1)
-        XCTAssertEqual(locationManager.desiredAccuracy, kCLLocationAccuracyThreeKilometers)
-        XCTAssertEqual(locationManager.distanceFilter, 100)
-        XCTAssertEqual(locationManager.activityType, .other)
+        XCTAssertEqual(locationManager.startUpdatingLocationCount, 0)
+        XCTAssertEqual(locationManager.startedRangingConstraints, [beaconRegion.beaconIdentityConstraint])
     }
 
-    func testStoppingBackgroundBeaconMonitoringRestoresLocationConfiguration() {
+    func testStoppingBackgroundBeaconMonitoringStopsRangingWithoutChangingLocationConfiguration() {
         let beaconRegion = CLBeaconRegion(uuid: UUID(), identifier: "beacon_region")
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         locationManager.distanceFilter = 42
@@ -220,7 +218,8 @@ class ZoneManagerCollectorTests: XCTestCase {
         collector.startBackgroundBeaconMonitoring(in: [beaconRegion], manager: locationManager)
         collector.stopBackgroundBeaconMonitoring(manager: locationManager)
 
-        XCTAssertEqual(locationManager.stopUpdatingLocationCount, 1)
+        XCTAssertEqual(locationManager.stopUpdatingLocationCount, 0)
+        XCTAssertEqual(locationManager.stoppedRangingConstraints, [beaconRegion.beaconIdentityConstraint])
         XCTAssertEqual(locationManager.desiredAccuracy, kCLLocationAccuracyHundredMeters)
         XCTAssertEqual(locationManager.distanceFilter, 42)
         XCTAssertEqual(locationManager.activityType, .fitness)

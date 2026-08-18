@@ -17,8 +17,7 @@ class ZoneManagerRegionFilterTests: XCTestCase {
     override func setUp() {
         super.setUp()
 
-        // limits are smaller for tests for stability/ease of tests - can hold 2x
-        // Each beacon zone also owns one circular approach region.
+        // Limits are smaller for tests for stability/ease of tests.
         filter = ZoneManagerRegionFilterImpl(limits: .init(beacon: 3, circular: 6))
 
         // inside home
@@ -104,8 +103,8 @@ class ZoneManagerRegionFilterTests: XCTestCase {
         XCTAssertEqual(Set(result), Set())
     }
 
-    func testBeaconApproachPairsRespectGlobalTwentyRegionLimit() {
-        let zones = (0 ..< 11).map { index in
+    func testBeaconRegionsRespectGlobalTwentyRegionLimit() {
+        let zones = (0 ..< 21).map { index in
             AppZone(
                 entityId: "zone.beacon_\(index)",
                 serverIdentifier: "server1",
@@ -127,8 +126,8 @@ class ZoneManagerRegionFilterTests: XCTestCase {
         ))
 
         XCTAssertEqual(result.count, 20)
-        XCTAssertEqual(result.filter { $0 is CLBeaconRegion }.count, 10)
-        XCTAssertEqual(result.filter { $0 is CLCircularRegion }.count, 10)
+        XCTAssertEqual(result.filter { $0 is CLBeaconRegion }.count, 20)
+        XCTAssertEqual(result.filter { $0 is CLCircularRegion }.count, 0)
     }
 
     func testAtCountProducesSameRegardlessOfLocatio() {

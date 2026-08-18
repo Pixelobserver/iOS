@@ -109,7 +109,8 @@ public struct AppZone: Codable, FetchableRecord, PersistableRecord, Hashable, Id
     public var regionsForMonitoring: [CLRegion] {
         #if os(iOS)
         if let beaconRegion {
-            return [beaconRegion, beaconApproachRegion]
+            // Test mode: monitor the iBeacon directly without a GPS approach region.
+            return [beaconRegion]
         } else {
             return circularRegionsForMonitoring
         }
