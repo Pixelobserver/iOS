@@ -414,7 +414,8 @@ public class WebhookManager: NSObject {
     public func startPersistedBackground(
         identifier: WebhookResponseIdentifier = .unhandled,
         server: Server,
-        request: WebhookRequest
+        request: WebhookRequest,
+        requestTimeout: TimeInterval? = nil
     ) -> Swift.Result<Promise<Void>, Error> {
         let start = { [self] () throws -> Promise<Void> in
             guard let handlerType = responseHandlers[identifier] else {
@@ -425,6 +426,9 @@ public class WebhookManager: NSObject {
             }
 
             var urlRequest = try URLRequest(url: webhookURL, method: .post)
+            if let requestTimeout {
+                urlRequest.timeoutInterval = requestTimeout
+            }
             urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
             let jsonObject = Mapper<WebhookRequest>(context: WebhookRequestContext.server(server))
                 .toJSON(request)

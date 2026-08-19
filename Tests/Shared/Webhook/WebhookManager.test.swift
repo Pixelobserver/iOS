@@ -843,7 +843,8 @@ class WebhookManagerTests: XCTestCase {
         let result = manager.startPersistedBackground(
             identifier: .unhandled,
             server: api1.server,
-            request: request
+            request: request,
+            requestTimeout: 30
         )
         guard case let .success(promise) = result else {
             return XCTFail("Expected a background upload task to start synchronously")
@@ -854,6 +855,7 @@ class WebhookManagerTests: XCTestCase {
             XCTAssertEqual(tasks.count, 1)
             XCTAssertNotNil(tasks.first as? URLSessionUploadTask)
             XCTAssertEqual(tasks.first?.state, .running)
+            XCTAssertEqual(tasks.first?.originalRequest?.timeoutInterval, 30)
             XCTAssertEqual(tasks.first?.webhookPersisted?.request.type, "webhook_name")
             taskCreated.fulfill()
         }

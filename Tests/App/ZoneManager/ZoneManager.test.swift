@@ -114,13 +114,17 @@ class ZoneManagerTests: XCTestCase {
         super.tearDown()
     }
 
-    private func newZoneManager(zoneEventOutbox: ZoneEventOutbox = FakeZoneEventOutbox()) -> ZoneManager {
+    private func newZoneManager(
+        zoneEventOutbox: ZoneEventOutbox = FakeZoneEventOutbox(),
+        zoneEventRetryDelay: @escaping (Int) -> TimeInterval = { _ in 1 }
+    ) -> ZoneManager {
         ZoneManager(
             locationManager: locationManager,
             collector: collector,
             processor: processor,
             regionFilter: regionFilter,
-            zoneEventOutbox: zoneEventOutbox
+            zoneEventOutbox: zoneEventOutbox,
+            zoneEventRetryDelay: zoneEventRetryDelay
         )
     }
 
@@ -550,6 +554,49 @@ class ZoneManagerTests: XCTestCase {
 
         XCTAssertEqual(outbox.pendingEvents.count, 1)
         XCTAssertTrue(notificationDispatcher.notifications.contains { $0.id == .beaconEventQueued })
+    }
+
+    func testRejectedZoneEventRetriesAutomaticallyAndThenDrainsFollowingEvent() throws {
+        let outbox = FakeZoneEventOutbox()
+        let manager = newZoneManager(zoneEventOutbox: outbox, zoneEventRetryDelay: { _ in 0 })
+        let api = apis[1]
+        let region = CLCircularRegion(
+            center: .init(latitude: 42.4242, longitude: 43.4343),
+            radius: 456,
+            identifier: "dogs"
+        )
+        let zone = try addedZones([
+            AppZone(
+                entityId: "zone.zid",
+                serverIdentifier: api.server.identifier.rawValue,
+                latitude: 42.2222,
+                longitude: 43.3333,
+                radius: 100,
+                trackingEnabled: true
+            ),
+        ])[0]
+        processor.promiseToReturn = .value(())
+        api.persistentEventStartResult = .success(.init(error: TestError.anyError))
+
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .inside),
+            associatedZone: zone
+        ))
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .outside),
+            associatedZone: zone
+        ))
+
+        api.persistentEventStartResult = .success(.value(()))
+        let drained = expectation(
+            for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }),
+            evaluatedWith: nil
+        )
+        wait(for: [drained], timeout: 1)
+        XCTAssertEqual(
+            api.createdEvents.map(\.eventType),
+            ["ios.zone_entered", "ios.zone_entered", "ios.zone_exited"]
+        )
     }
 
     func testFailedZoneEventIsQueuedAndRetriedWhenAppBecomesActive() throws {

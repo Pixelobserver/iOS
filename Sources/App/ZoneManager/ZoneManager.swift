@@ -16,19 +16,26 @@ class ZoneManager {
 
     private var observationToken: AnyDatabaseCancellable?
     private var drainingZoneEventIDs = Set<UUID>()
+    private var zoneEventRetryAttempt = 0
+    private var zoneEventRetryWorkItem: DispatchWorkItem?
+    private let zoneEventRetryDelay: (Int) -> TimeInterval
 
     init(
         locationManager: CLLocationManager = .init(),
         collector: ZoneManagerCollector = ZoneManagerCollectorImpl(),
         processor: ZoneManagerProcessor = ZoneManagerProcessorImpl(),
         regionFilter: ZoneManagerRegionFilter = ZoneManagerRegionFilterImpl(),
-        zoneEventOutbox: ZoneEventOutbox = UserDefaultsZoneEventOutbox()
+        zoneEventOutbox: ZoneEventOutbox = UserDefaultsZoneEventOutbox(),
+        zoneEventRetryDelay: @escaping (Int) -> TimeInterval = { attempt in
+            min(pow(2, Double(max(0, attempt - 1))), 30)
+        }
     ) {
         self.locationManager = locationManager
         self.collector = collector
         self.processor = processor
         self.regionFilter = regionFilter
         self.zoneEventOutbox = zoneEventOutbox
+        self.zoneEventRetryDelay = zoneEventRetryDelay
         self.zones = AppZone.trackedZones()
 
         self.collector.delegate = self
@@ -62,6 +69,7 @@ class ZoneManager {
     }
 
     deinit {
+        zoneEventRetryWorkItem?.cancel()
         observationToken?.cancel()
         NotificationCenter.default.removeObserver(self)
         Current.Log.info("going away")
@@ -288,10 +296,13 @@ class ZoneManager {
                     )
                 }
             }
+            scheduleZoneEventRetry()
             return false
         }
 
         drainingZoneEventIDs.insert(pendingEvent.id)
+        zoneEventRetryWorkItem?.cancel()
+        zoneEventRetryWorkItem = nil
         logBeaconDeliveryStage("background_upload_started", pendingEvent: pendingEvent)
         if pendingEvent.isBeacon == true {
             sendBeaconStageNotification(
@@ -320,6 +331,7 @@ class ZoneManager {
 
         switch result {
         case .fulfilled:
+            zoneEventRetryAttempt = 0
             logBeaconDeliveryStage("webhook_confirmed", pendingEvent: pendingEvent)
             zoneEventOutbox.remove(id: pendingEvent.id)
             flushPendingZoneEvents()
@@ -355,22 +367,63 @@ class ZoneManager {
                 title: "DEBUG: Failed to fire ZoneManager",
                 body: message
             ))
+            scheduleZoneEventRetry()
         }
     }
 
     private func flushPendingZoneEvents() {
-        guard let pending = zoneEventOutbox.pendingEvents.first,
-              !drainingZoneEventIDs.contains(pending.id),
-              let eventData = pending.decodedEventData,
-              let server = Current.servers.server(
-                  forServerIdentifier: pending.serverIdentifier
-              ),
-              let api = Current.api(for: server) else { return }
+        guard let pending = zoneEventOutbox.pendingEvents.first else {
+            zoneEventRetryAttempt = 0
+            zoneEventRetryWorkItem?.cancel()
+            zoneEventRetryWorkItem = nil
+            return
+        }
+        guard !drainingZoneEventIDs.contains(pending.id) else { return }
+        guard let eventData = pending.decodedEventData else {
+            logZoneEventDrainBlocked(pending, reason: "Event-Daten sind nicht lesbar")
+            return
+        }
+        guard let server = Current.servers.server(forServerIdentifier: pending.serverIdentifier) else {
+            logZoneEventDrainBlocked(pending, reason: "Server ist nicht verfügbar")
+            scheduleZoneEventRetry()
+            return
+        }
+        guard let api = Current.api(for: server) else {
+            logZoneEventDrainBlocked(pending, reason: "Home-Assistant-API ist nicht verfügbar")
+            scheduleZoneEventRetry()
+            return
+        }
 
         _ = startZoneEvent(
             api: api,
             pendingEvent: pending,
             eventData: eventData
+        )
+    }
+
+    private func scheduleZoneEventRetry() {
+        guard zoneEventRetryWorkItem == nil else { return }
+        zoneEventRetryAttempt += 1
+        let delay = zoneEventRetryDelay(zoneEventRetryAttempt)
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.zoneEventRetryWorkItem = nil
+            self.flushPendingZoneEvents()
+        }
+        zoneEventRetryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func logZoneEventDrainBlocked(_ pendingEvent: PendingZoneEvent, reason: String) {
+        let message = "ZoneManager outbox drain blocked: \(reason)"
+        Current.Log.error(message)
+        Current.clientEventStore.addEvent(.init(text: message, type: .locationUpdate))
+        guard pendingEvent.isBeacon == true else { return }
+        sendBeaconStageNotification(
+            id: .beaconEventQueued,
+            title: "Beacon-Ereignis wartet auf Home Assistant",
+            pendingEvent: pendingEvent,
+            detail: reason
         )
     }
 

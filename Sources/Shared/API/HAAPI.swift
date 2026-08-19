@@ -409,7 +409,8 @@ public class HomeAssistantAPI {
             request: .init(type: "fire_event", data: [
                 "event_type": eventType,
                 "event_data": eventData,
-            ])
+            ]),
+            requestTimeout: 30
         )
     }
 
