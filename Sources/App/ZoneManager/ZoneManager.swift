@@ -230,6 +230,7 @@ class ZoneManager {
             // Persist before any asynchronous URL resolution or URLSession task creation.
             // iOS may suspend us at either boundary; the next wake can then resume delivery.
             zoneEventOutbox.append(pending)
+            logBeaconDeliveryStage("outbox_persisted", pendingEvent: pending)
             flushPendingZoneEvents()
         } catch {
             let message = "Failed to persist ZoneManager event before delivery: \(error.localizedDescription)"
@@ -277,6 +278,7 @@ class ZoneManager {
         }
 
         drainingZoneEventIDs.insert(pendingEvent.id)
+        logBeaconDeliveryStage("background_upload_started", pendingEvent: pendingEvent)
         delivery.pipe { [weak self] result in
             DispatchQueue.main.async {
                 self?.handleZoneEventResult(
@@ -296,6 +298,7 @@ class ZoneManager {
 
         switch result {
         case .fulfilled:
+            logBeaconDeliveryStage("webhook_confirmed", pendingEvent: pendingEvent)
             zoneEventOutbox.remove(id: pendingEvent.id)
             flushPendingZoneEvents()
             Current.Log.info("Fired ZoneManager event")
@@ -308,6 +311,11 @@ class ZoneManager {
                 )
             }
         case let .rejected(error):
+            logBeaconDeliveryStage(
+                "webhook_failed",
+                pendingEvent: pendingEvent,
+                detail: error.localizedDescription
+            )
             let message = "Failed to fire ZoneManager event; queued for retry: \(error.localizedDescription)"
             Current.Log.error(message)
             Current.clientEventStore.addEvent(.init(text: message, type: .locationUpdate))
@@ -375,6 +383,26 @@ class ZoneManager {
         }
 
         Current.notificationDispatcher.send(notification)
+    }
+
+    private func logBeaconDeliveryStage(
+        _ stage: String,
+        pendingEvent: PendingZoneEvent,
+        detail: String? = nil
+    ) {
+        guard pendingEvent.isBeacon == true else { return }
+        Current.clientEventStore.addEvent(ClientEvent(
+            text: "Beacon delivery: \(stage)",
+            type: .networkRequest,
+            payload: [
+                "stage": stage,
+                "event_id": pendingEvent.id.uuidString,
+                "event_type": pendingEvent.eventType,
+                "created_at": ISO8601DateFormatter().string(from: pendingEvent.createdAt),
+                "recorded_at": ISO8601DateFormatter().string(from: Current.date()),
+                "detail": detail ?? "",
+            ]
+        ))
     }
 
     private func beaconDiagnosticTimestamp() -> String {
@@ -488,6 +516,18 @@ extension ZoneManager: ZoneManagerCollectorDelegate {
 
     func collector(_ collector: ZoneManagerCollector, didCollect event: ZoneManagerEvent) {
         sendLocalBeaconNotification(for: event)
+        if case let .region(region, state) = event.eventType, region is CLBeaconRegion {
+            Current.clientEventStore.addEvent(ClientEvent(
+                text: "Beacon delivery: accepted_sample",
+                type: .locationUpdate,
+                payload: [
+                    "stage": "accepted_sample",
+                    "region": region.identifier,
+                    "state": String(describing: state),
+                    "recorded_at": ISO8601DateFormatter().string(from: Current.date()),
+                ]
+            ))
+        }
         fire(event: event)
         perform(event: event)
     }

@@ -420,7 +420,7 @@ public class WebhookManager: NSObject {
             guard let handlerType = responseHandlers[identifier] else {
                 throw WebhookError.unregisteredIdentifier(handler: identifier.rawValue)
             }
-            guard let webhookURL = server.webhookURLUsingLastKnownNetworkState() else {
+            guard let webhookURL = server.preferredBackgroundWebhookURL() else {
                 throw ServerConnectionError.noActiveURL(server.info.name)
             }
 
