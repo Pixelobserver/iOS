@@ -518,6 +518,8 @@ class ZoneManagerTests: XCTestCase {
             associatedZone: zone
         ))
 
+        XCTAssertTrue(notificationDispatcher.notifications.contains { $0.id == .beaconEventPersisted })
+        XCTAssertTrue(notificationDispatcher.notifications.contains { $0.id == .beaconEventUploadStarted })
         let delivered = expectation(for: NSPredicate(block: { _, _ in
             self.notificationDispatcher.notifications.contains { $0.id == .beaconEventDelivered }
         }), evaluatedWith: nil)

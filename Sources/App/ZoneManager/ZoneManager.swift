@@ -193,13 +193,20 @@ class ZoneManager {
             return
         }
 
-        guard let zone = event.associatedZone,
-              let server = Current.servers.server(forServerIdentifier: zone.serverIdentifier) else { return }
+        guard let zone = event.associatedZone else {
+            notifyBeaconFirePreconditionFailure(event: event, reason: "Zone fehlt")
+            return
+        }
+        guard let server = Current.servers.server(forServerIdentifier: zone.serverIdentifier) else {
+            notifyBeaconFirePreconditionFailure(event: event, reason: "Server fehlt")
+            return
+        }
 
         switch event.eventType {
         case let .region(region, state):
             guard let api = Current.api(for: server) else {
                 Current.Log.error("No API available to fire ZoneManager event, server: \(server)")
+                notifyBeaconFirePreconditionFailure(event: event, reason: "API fehlt")
                 return
             }
             let eventInfo = api.zoneStateEvent(region: region, state: state, zone: zone)
@@ -231,6 +238,13 @@ class ZoneManager {
             // iOS may suspend us at either boundary; the next wake can then resume delivery.
             zoneEventOutbox.append(pending)
             logBeaconDeliveryStage("outbox_persisted", pendingEvent: pending)
+            if pending.isBeacon == true {
+                sendBeaconStageNotification(
+                    id: .beaconEventPersisted,
+                    title: "Beacon-Ereignis in Outbox gespeichert",
+                    pendingEvent: pending
+                )
+            }
             flushPendingZoneEvents()
         } catch {
             let message = "Failed to persist ZoneManager event before delivery: \(error.localizedDescription)"
@@ -279,6 +293,14 @@ class ZoneManager {
 
         drainingZoneEventIDs.insert(pendingEvent.id)
         logBeaconDeliveryStage("background_upload_started", pendingEvent: pendingEvent)
+        if pendingEvent.isBeacon == true {
+            sendBeaconStageNotification(
+                id: .beaconEventUploadStarted,
+                title: "Beacon-Upload an Home Assistant gestartet",
+                pendingEvent: pendingEvent
+            )
+            scheduleBeaconUploadWatchdog(for: pendingEvent)
+        }
         delivery.pipe { [weak self] result in
             DispatchQueue.main.async {
                 self?.handleZoneEventResult(
@@ -383,6 +405,63 @@ class ZoneManager {
         }
 
         Current.notificationDispatcher.send(notification)
+    }
+
+    private func notifyBeaconFirePreconditionFailure(event: ZoneManagerEvent, reason: String) {
+        guard case let .region(region, state) = event.eventType,
+              region is CLBeaconRegion else { return }
+
+        let action = state == .inside ? "Entry" : "Exit"
+        Current.clientEventStore.addEvent(ClientEvent(
+            text: "Beacon delivery: preflight_failed",
+            type: .networkRequest,
+            payload: [
+                "stage": "preflight_failed",
+                "region": region.identifier,
+                "state": String(describing: state),
+                "reason": reason,
+                "recorded_at": ISO8601DateFormatter().string(from: Current.date()),
+            ]
+        ))
+        Current.notificationDispatcher.send(.init(
+            id: .beaconEventPreflightFailed,
+            title: "Beacon-Ereignis vor Outbox abgebrochen",
+            body: "\(action) · \(reason) · \(beaconDiagnosticTimestamp())"
+        ))
+    }
+
+    private func sendBeaconStageNotification(
+        id: NotificationIdentifier,
+        title: String,
+        pendingEvent: PendingZoneEvent,
+        detail: String? = nil
+    ) {
+        guard pendingEvent.isBeacon == true else { return }
+        let action = pendingEvent.eventType == "ios.zone_entered" ? "Entry" : "Exit"
+        let shortID = String(pendingEvent.id.uuidString.prefix(8))
+        let body = [action, shortID, beaconDiagnosticTimestamp(), detail].compactMap { $0 }
+            .joined(separator: " · ")
+        Current.notificationDispatcher.send(.init(id: id, title: title, body: body))
+    }
+
+    private func scheduleBeaconUploadWatchdog(for pendingEvent: PendingZoneEvent) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self,
+                  self.drainingZoneEventIDs.contains(pendingEvent.id),
+                  self.zoneEventOutbox.pendingEvents.contains(where: { $0.id == pendingEvent.id }) else { return }
+
+            self.logBeaconDeliveryStage(
+                "webhook_stalled",
+                pendingEvent: pendingEvent,
+                detail: "No completion after 15 seconds"
+            )
+            self.sendBeaconStageNotification(
+                id: .beaconEventUploadStalled,
+                title: "Beacon-Upload hängt ohne Antwort",
+                pendingEvent: pendingEvent,
+                detail: ">15 Sekunden"
+            )
+        }
     }
 
     private func logBeaconDeliveryStage(

@@ -12,6 +12,10 @@ public enum NotificationIdentifier: String {
     // Beacon diagnostics
     case beaconDetectedLocally
     case beaconExitedLocally
+    case beaconEventPreflightFailed
+    case beaconEventPersisted
+    case beaconEventUploadStarted
+    case beaconEventUploadStalled
     case beaconEventDelivered
     case beaconEventQueued
 
