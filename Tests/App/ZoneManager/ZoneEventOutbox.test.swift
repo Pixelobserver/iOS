@@ -54,4 +54,89 @@ final class ZoneEventOutboxTests: XCTestCase {
 
         XCTAssertEqual(outbox.pendingEvents, [event])
     }
+
+    func testExpiredEventIsRemovedWhenOutboxIsRead() throws {
+        let now = Date()
+        let event = try PendingZoneEvent(
+            serverIdentifier: "server-id",
+            eventType: "ios.zone_entered",
+            eventData: ["zone": "zone.postfach"],
+            createdAt: now.addingTimeInterval(-121),
+            isBeacon: true
+        )
+        var outbox: UserDefaultsZoneEventOutbox? = UserDefaultsZoneEventOutbox(
+            defaults: defaults,
+            key: "outbox",
+            date: { now.addingTimeInterval(-121) }
+        )
+        outbox?.append(event)
+
+        outbox = UserDefaultsZoneEventOutbox(defaults: defaults, key: "outbox", date: { now })
+
+        XCTAssertTrue(outbox?.pendingEvents.isEmpty == true)
+        XCTAssertNil(defaults.data(forKey: "outbox"))
+    }
+
+    func testLatestBeaconTransitionReplacesQueuedTransitionForSameZone() throws {
+        let entry = try PendingZoneEvent(
+            serverIdentifier: "server-id",
+            eventType: "ios.zone_entered",
+            eventData: ["zone": "zone.postfach"],
+            isBeacon: true
+        )
+        let exit = try PendingZoneEvent(
+            serverIdentifier: "server-id",
+            eventType: "ios.zone_exited",
+            eventData: ["zone": "zone.postfach"],
+            isBeacon: true
+        )
+        let outbox = UserDefaultsZoneEventOutbox(defaults: defaults, key: "outbox")
+
+        outbox.append(entry)
+        outbox.append(exit)
+
+        XCTAssertEqual(outbox.pendingEvents, [exit])
+    }
+
+    func testBeaconTransitionsForDifferentZonesRemainQueued() throws {
+        let postfachEntry = try PendingZoneEvent(
+            serverIdentifier: "server-id",
+            eventType: "ios.zone_entered",
+            eventData: ["zone": "zone.postfach"],
+            isBeacon: true
+        )
+        let garageEntry = try PendingZoneEvent(
+            serverIdentifier: "server-id",
+            eventType: "ios.zone_entered",
+            eventData: ["zone": "zone.garage"],
+            isBeacon: true
+        )
+        let outbox = UserDefaultsZoneEventOutbox(defaults: defaults, key: "outbox")
+
+        outbox.append(postfachEntry)
+        outbox.append(garageEntry)
+
+        XCTAssertEqual(outbox.pendingEvents, [postfachEntry, garageEntry])
+    }
+
+    func testExpiredNonBeaconEventIsAlsoRemoved() throws {
+        let now = Date()
+        let event = try PendingZoneEvent(
+            serverIdentifier: "server-id",
+            eventType: "ios.zone_entered",
+            eventData: ["zone": "zone.home"],
+            createdAt: now.addingTimeInterval(-121),
+            isBeacon: false
+        )
+        let outbox = UserDefaultsZoneEventOutbox(
+            defaults: defaults,
+            key: "outbox",
+            date: { now.addingTimeInterval(-121) }
+        )
+
+        outbox.append(event)
+
+        let reloadedOutbox = UserDefaultsZoneEventOutbox(defaults: defaults, key: "outbox", date: { now })
+        XCTAssertTrue(reloadedOutbox.pendingEvents.isEmpty)
+    }
 }

@@ -767,6 +767,49 @@ class ZoneManagerTests: XCTestCase {
         XCTAssertEqual(api.createdEvents.map(\.eventType), ["ios.zone_entered", "ios.zone_exited"])
     }
 
+    func testCoalescedBeaconExitWaitsForInFlightEntry() throws {
+        let suiteName = "ZoneManagerTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let outbox = UserDefaultsZoneEventOutbox(defaults: defaults, key: "outbox")
+        let manager = newZoneManager(zoneEventOutbox: outbox)
+        let api = apis[1]
+        let region = CLBeaconRegion(uuid: UUID(), identifier: "postfach")
+        let zone = try addedZones([
+            AppZone(
+                entityId: "zone.postfach",
+                serverIdentifier: api.server.identifier.rawValue,
+                friendlyName: "Postfach",
+                trackingEnabled: true,
+                beaconUUID: region.uuid.uuidString
+            ),
+        ])[0]
+        processor.promiseToReturn = .value(())
+        let (entryDelivery, entryDeliverySeal) = Promise<Void>.pending()
+        api.persistentEventStartResult = .success(entryDelivery)
+
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .inside),
+            associatedZone: zone
+        ))
+        manager.collector(collector, didCollect: ZoneManagerEvent(
+            eventType: .region(region, .outside),
+            associatedZone: zone
+        ))
+
+        XCTAssertEqual(outbox.pendingEvents.map(\.eventType), ["ios.zone_exited"])
+        XCTAssertEqual(api.createdEvents.map(\.eventType), ["ios.zone_entered"])
+
+        api.persistentEventStartResult = .success(.value(()))
+        entryDeliverySeal.fulfill(())
+        let drained = expectation(
+            for: NSPredicate(block: { _, _ in outbox.pendingEvents.isEmpty }),
+            evaluatedWith: nil
+        )
+        wait(for: [drained], timeout: 1)
+        XCTAssertEqual(api.createdEvents.map(\.eventType), ["ios.zone_entered", "ios.zone_exited"])
+    }
+
     func testCollectorCollectsMultipleRegionZoneAndEventFires() throws {
         let manager = newZoneManager()
         let api = apis[1]

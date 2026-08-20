@@ -378,7 +378,9 @@ class ZoneManager {
             zoneEventRetryWorkItem = nil
             return
         }
-        guard !drainingZoneEventIDs.contains(pending.id) else { return }
+        // A newer Beacon transition may replace an in-flight event in the Outbox. Keep delivery serial until the
+        // existing upload completes, then drain the newest remaining state.
+        guard drainingZoneEventIDs.isEmpty else { return }
         guard let eventData = pending.decodedEventData else {
             logZoneEventDrainBlocked(pending, reason: "Event-Daten sind nicht lesbar")
             return
@@ -427,6 +429,8 @@ class ZoneManager {
         )
     }
 
+    // DEBUG TESTING ONLY: keep these local Beacon pop-ups enabled during physical validation. For the final PR,
+    // comment out their call sites without deleting this diagnostic code so it can be re-enabled when needed.
     private func sendLocalBeaconNotification(for event: ZoneManagerEvent) {
         guard case let .region(region, state) = event.eventType,
               region is CLBeaconRegion,
@@ -460,6 +464,8 @@ class ZoneManager {
         Current.notificationDispatcher.send(notification)
     }
 
+    // DEBUG TESTING ONLY: the notification methods in this block expose the physical Beacon delivery stages.
+    // Keep them enabled for the current device test; comment out their call sites before submitting the final PR.
     private func notifyBeaconFirePreconditionFailure(event: ZoneManagerEvent, reason: String) {
         guard case let .region(region, state) = event.eventType,
               region is CLBeaconRegion else { return }
@@ -647,6 +653,8 @@ extension ZoneManager: ZoneManagerCollectorDelegate {
     }
 
     func collector(_ collector: ZoneManagerCollector, didCollect event: ZoneManagerEvent) {
+        // DEBUG TESTING ONLY: immediate proof that iOS accepted the Beacon transition. Disable for the final PR by
+        // commenting out this call; retain the helper above for future diagnostics.
         sendLocalBeaconNotification(for: event)
         if case let .region(region, state) = event.eventType, region is CLBeaconRegion {
             Current.clientEventStore.addEvent(ClientEvent(

@@ -39,26 +39,42 @@ protocol ZoneEventOutbox: AnyObject {
 final class UserDefaultsZoneEventOutbox: ZoneEventOutbox {
     private let defaults: UserDefaults
     private let key: String
+    private let date: () -> Date
     private let queue = DispatchQueue(label: "io.robbie.HomeAssistant.ZoneEventOutbox")
     private let maximumEventCount = 100
-    private let maximumEventAge: TimeInterval = 7 * 24 * 60 * 60
+    private let maximumEventAge: TimeInterval = 2 * 60
 
     init(
         defaults: UserDefaults = UserDefaults(suiteName: AppConstants.AppGroupID) ?? .standard,
-        key: String = "zoneEventOutbox.v1"
+        key: String = "zoneEventOutbox.v1",
+        date: @escaping () -> Date = Date.init
     ) {
         self.defaults = defaults
         self.key = key
+        self.date = date
     }
 
     var pendingEvents: [PendingZoneEvent] {
-        queue.sync { load() }
+        queue.sync {
+            let storedEvents = load()
+            let pendingEvents = freshEvents(from: storedEvents, at: date())
+            if pendingEvents != storedEvents {
+                save(pendingEvents)
+            }
+            return pendingEvents
+        }
     }
 
     func append(_ event: PendingZoneEvent) {
         queue.sync {
-            var events = load().filter { Date().timeIntervalSince($0.createdAt) <= maximumEventAge }
+            let now = date()
+            guard isFresh(event, at: now) else { return }
+
+            var events = freshEvents(from: load(), at: now)
             guard !events.contains(where: { $0.id == event.id }) else { return }
+            if event.isBeacon == true {
+                events.removeAll { isSameBeaconZone($0, event) }
+            }
             events.append(event)
             events = Array(events.suffix(maximumEventCount))
             save(events)
@@ -76,6 +92,23 @@ final class UserDefaultsZoneEventOutbox: ZoneEventOutbox {
     private func load() -> [PendingZoneEvent] {
         guard let data = defaults.data(forKey: key) else { return [] }
         return (try? JSONDecoder().decode([PendingZoneEvent].self, from: data)) ?? []
+    }
+
+    private func freshEvents(from events: [PendingZoneEvent], at date: Date) -> [PendingZoneEvent] {
+        events.filter { isFresh($0, at: date) }
+    }
+
+    private func isFresh(_ event: PendingZoneEvent, at date: Date) -> Bool {
+        date.timeIntervalSince(event.createdAt) <= maximumEventAge
+    }
+
+    private func isSameBeaconZone(_ lhs: PendingZoneEvent, _ rhs: PendingZoneEvent) -> Bool {
+        guard lhs.isBeacon == true,
+              rhs.isBeacon == true,
+              lhs.serverIdentifier == rhs.serverIdentifier,
+              let lhsZone = lhs.decodedEventData?["zone"] as? String,
+              let rhsZone = rhs.decodedEventData?["zone"] as? String else { return false }
+        return lhsZone == rhsZone
     }
 
     private func save(_ events: [PendingZoneEvent]) {
