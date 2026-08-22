@@ -126,16 +126,13 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         for region in regions.compactMap({ $0 as? CLBeaconRegion }) {
             let event = Self.event(for: region, state: .inside)
-            guard let zone = event.associatedZone else { continue }
+            guard event.associatedZone != nil else { continue }
 
             foregroundBeaconEntries[region.identifier] = ForegroundBeaconEntry(
                 event: event,
                 region: region,
                 constraint: region.beaconIdentityConstraint
             )
-            if zone.inRegion {
-                foregroundBeaconIdentifiersInside.insert(region.identifier)
-            }
             manager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
         }
     }
@@ -177,16 +174,13 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
 
         for region in regions.compactMap({ $0 as? CLBeaconRegion }) {
             let event = Self.event(for: region, state: .inside)
-            guard let zone = event.associatedZone else { continue }
+            guard event.associatedZone != nil else { continue }
 
             opportunisticBeaconEntries[region.identifier] = ForegroundBeaconEntry(
                 event: event,
                 region: region,
                 constraint: region.beaconIdentityConstraint
             )
-            if zone.inRegion {
-                foregroundBeaconIdentifiersInside.insert(region.identifier)
-            }
             manager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
         }
 
@@ -562,7 +556,11 @@ class ZoneManagerCollectorImpl: NSObject, ZoneManagerCollector {
         switch beacon.proximity {
         case .immediate, .near:
             return true
-        case .far, .unknown:
+        // Core Location can briefly classify a physically close beacon as `.far` while RSSI stabilizes.
+        // Accept only a strong far sample so background Entry does not depend on a later `.near` callback.
+        case .far:
+            return beacon.rssi >= -82
+        case .unknown:
             return false
         @unknown default:
             return false
