@@ -421,6 +421,8 @@ public class HomeAssistantAPI {
         )
     }
 
+    private static let persistentEventRequestTimeout: TimeInterval = 30
+
     /// Starts a persisted background event upload synchronously.
     ///
     /// A successful result proves URLSession owns a resumed background task. A failure means no
@@ -438,7 +440,7 @@ public class HomeAssistantAPI {
                 "event_data": eventData,
             ]),
             requestIdentifier: eventIdentifier.uuidString,
-            requestTimeout: 30
+            requestTimeout: Self.persistentEventRequestTimeout
         )
     }
 
