@@ -237,9 +237,18 @@ class LocalPushManagerTests: XCTestCase {
         XCTAssertEqual(final.0.identifier, "test_tag")
         final.1.fulfill(())
 
-        let expectation3 = expectation(description: "run loop")
-        DispatchQueue.main.async(execute: expectation3.fulfill)
-        waitForExpectations(timeout: 10.0)
+        // HAMockConnection has no request observer. Wait for the actual confirmation,
+        // not a main-queue turn that can run before the Task attaches its promise handler.
+        let confirmationSent = expectation(
+            for: NSPredicate { [apiConnection] _, _ in
+                guard let apiConnection else { return false }
+                return apiConnection.pendingRequests.contains {
+                    $0.request.type == "mobile_app/push_notification_confirm"
+                }
+            },
+            evaluatedWith: nil
+        )
+        wait(for: [confirmationSent], timeout: 10.0)
 
         let pendingRequest = try XCTUnwrap(
             apiConnection.pendingRequests
@@ -289,9 +298,18 @@ class LocalPushManagerTests: XCTestCase {
         XCTAssertEqual(final.0.identifier, "test_tag")
         final.1.fulfill(())
 
-        let expectation3 = expectation(description: "run loop")
-        DispatchQueue.main.async(execute: expectation3.fulfill)
-        waitForExpectations(timeout: 10.0)
+        // HAMockConnection has no request observer. Wait for the actual confirmation,
+        // not a main-queue turn that can run before the Task attaches its promise handler.
+        let confirmationSent = expectation(
+            for: NSPredicate { [apiConnection] _, _ in
+                guard let apiConnection else { return false }
+                return apiConnection.pendingRequests.contains {
+                    $0.request.type == "mobile_app/push_notification_confirm"
+                }
+            },
+            evaluatedWith: nil
+        )
+        wait(for: [confirmationSent], timeout: 10.0)
 
         let pendingRequest = try XCTUnwrap(
             apiConnection.pendingRequests

@@ -995,6 +995,9 @@ final class WebViewControllerTests: XCTestCase {
         let sut = WebViewController(server: server)
         let containerView = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 640))
         sut.setValue(containerView, forKey: "view")
+        // Setting the view through KVC bypasses viewDidLoad. Delayed URL-loading callbacks
+        // still require the web view that the normal lifecycle would have created.
+        sut.webView = WKWebView(frame: containerView.bounds)
         return sut
     }
 
