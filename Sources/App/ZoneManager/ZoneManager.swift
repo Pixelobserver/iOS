@@ -457,14 +457,15 @@ class ZoneManager {
         drainingZoneEventIDs.insert(pendingEvent.id)
         zoneEventRetryIdentifier = nil
         logBeaconDeliveryStage("background_upload_started", pendingEvent: pendingEvent)
-        if pendingEvent.isBeacon == true {
+        if pendingEvent.isBeacon {
             scheduleBeaconUploadWatchdog(for: pendingEvent)
         }
 
         Task { [weak self] in
             let result = await delivery.result
             await MainActor.run {
-                self?.handleZoneEventResult(result, pendingEvent: pendingEvent)
+                guard let self, drainingZoneEventIDs.contains(pendingEvent.id) else { return }
+                handleZoneEventResult(result, pendingEvent: pendingEvent)
             }
         }
     }
@@ -476,7 +477,7 @@ class ZoneManager {
             let state = await api.reconcilePersistentEvent(eventIdentifier: pendingEvent.id)
             await MainActor.run {
                 guard let self else { return }
-                reconcilingZoneEventIDs.remove(pendingEvent.id)
+                guard reconcilingZoneEventIDs.remove(pendingEvent.id) != nil else { return }
                 switch state {
                 case let .running(delivery):
                     attach(delivery: delivery, to: pendingEvent)
@@ -567,7 +568,7 @@ class ZoneManager {
         pendingEvent: PendingZoneEvent,
         detail: String? = nil
     ) {
-        guard pendingEvent.isBeacon == true else { return }
+        guard pendingEvent.isBeacon else { return }
         Current.Log.debug("Beacon delivery: \(stage), id: \(pendingEvent.id), \(detail ?? "")")
         // Intermediate stages belong in debug logs, not the bounded user-facing history.
         // Failures already have a single outcome entry in handleZoneEventResult.

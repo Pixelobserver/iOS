@@ -1471,11 +1471,12 @@ class WebhookManagerTests: XCTestCase {
         manager.register(responseHandler: ReplacingTestHandler.self, for: identifier)
         let handlerStarted = expectation(description: "handler started after background task")
         ReplacingTestHandler.onInit = {
-            XCTAssertTrue(Thread.isMainThread)
+            XCTAssertFalse(Thread.isMainThread)
             XCTAssertEqual(
                 backgroundTask.names,
                 [BackgroundTask.webhookSend.rawValue, BackgroundTask.webhookInvoke.rawValue]
             )
+            XCTAssertEqual(backgroundTask.invocationsWereOnMainThread, [true, false])
             handlerStarted.fulfill()
         }
         stub(condition: { [webhookURL1] request in request.url == webhookURL1 }, response: { _ in
